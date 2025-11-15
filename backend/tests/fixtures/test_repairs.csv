@@ -1,0 +1,4 @@
+Product,symptom,description,percentage,parts,symptom_detail_url,difficulty,repair_video_url
+Refrigerator,Ice maker not working,Ice maker stopped producing ice,75,Ice Maker Assembly,https://partselect.com/repair/ice-maker,Moderate,https://youtube.com/repair1
+Refrigerator,Not cooling,Fridge not maintaining temperature,68,Evaporator Fan,https://partselect.com/repair/not-cooling,Difficult,https://youtube.com/repair2
+

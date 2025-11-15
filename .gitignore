@@ -1,1 +1,67 @@
+# Frontend
 frontend/node_modules/
+Frontend/node_modules/
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+build/
+dist/
+.DS_Store
+
+# Python / Backend
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/**/*.pyo
+backend/**/*.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data & Vector Store (Don't commit large data files or vector DB)
+backend/data/vector_store/
+backend/data/vector_store_test/
+backend/data/processed/
+backend/data/raw/*.csv
+!backend/data/raw/*_test.csv  # Keep test data
+backend/data/raw/*.json
+backend/data/raw/*.html
+
+# Test fixtures are OK to commit
+!backend/tests/fixtures/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Logs
+logs/
+*.log
+
+# Misc
+.cache/
+temp/
+tmp/

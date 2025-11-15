@@ -1,0 +1,41 @@
+# Scraping
+requests==2.31.0
+lxml==5.1.0
+selenium==4.16.0
+undetected-chromedriver==3.5.4
+webdriver-manager==4.0.2
+
+# Utilities
+python-dotenv==1.0.0
+
+# RAG Pipeline - LangChain Core
+langchain==0.3.0
+langchain-community==0.3.0
+langchain-core==0.3.0
+
+# Vector Database
+chromadb==0.5.23
+
+# Embeddings (Local)
+sentence-transformers==3.3.1
+
+# LLM Integration - Deepseek
+openai==1.59.8  # Deepseek uses OpenAI-compatible API
+
+# Document Processing
+beautifulsoup4==4.12.2  # For HTML parsing if needed
+
+# FastAPI Backend
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+
+# Testing Framework
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-cov==6.0.0  # For test coverage reports
+httpx>=0.27.0 
+
+# Development
+black==24.10.0  # Code formatter 

@@ -1,0 +1,4 @@
+part_name,part_id,mpn_id,part_price,install_difficulty,install_time,symptoms,product_types,replace_parts,brand,availability,install_video_url,product_url
+Test Ice Maker,PS123456,WR123,$50.00,Easy,15 min,Ice maker not working,Refrigerator,WR999,GE,In Stock,https://youtube.com/test1,https://partselect.com/test1
+Test Water Filter,PS789012,WR456,$25.00,Easy,10 min,Bad water taste,Refrigerator,WR888,Whirlpool,In Stock,https://youtube.com/test2,https://partselect.com/test2
+

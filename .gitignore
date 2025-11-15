@@ -37,7 +37,7 @@ backend/data/raw/*.html
 
 # Test fixtures are OK to commit
 !backend/tests/fixtures/
-
+backend/tests/test_data/
 # Environment variables
 .env
 .env.local

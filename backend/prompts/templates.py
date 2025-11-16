@@ -209,17 +209,6 @@ def build_rag_prompt(
 ) -> str:
     """
     Build complete prompt for RAG query following research best practices.
-    
-    Args:
-        user_query: User's question
-        context_docs: Retrieved documents from vector store
-        system_prompt: System prompt defining agent behavior
-        include_examples: Whether to include few-shot examples
-        query_analysis: Analysis of the user's query for prompt customization
-        max_context_tokens: Maximum tokens for context (for budget management)
-    
-    Returns:
-        Complete formatted prompt ready for LLM
     """
     prompt_parts = []
     
@@ -232,20 +221,39 @@ def build_rag_prompt(
         prompt_parts.append(FEW_SHOT_EXAMPLES.strip())
         prompt_parts.append("\n")
     
-    # 3. Check for conflicts in retrieved documents (NEW)
+    # ✅ NEW: Check if query is about out-of-scope appliances
+    out_of_scope_appliances = [
+        'washing machine', 'washer', 'dryer', 'oven', 'stove', 'range', 
+        'cooktop', 'microwave', 'air conditioner', 'ac unit', 'heater',
+        'furnace', 'water heater', 'garbage disposal', 'trash compactor'
+    ]
+    
+    query_lower = user_query.lower()
+    detected_out_of_scope = [app for app in out_of_scope_appliances if app in query_lower]
+    
+    if detected_out_of_scope:
+        appliance_list = ', '.join(detected_out_of_scope)
+        prompt_parts.append(f"🚨 CRITICAL SCOPE VIOLATION: The user is asking about {appliance_list}.")
+        prompt_parts.append("This is OUTSIDE your scope. You MUST:")
+        prompt_parts.append("1. Politely decline immediately")
+        prompt_parts.append("2. DO NOT use ANY information from the context below")
+        prompt_parts.append("3. DO NOT mention any parts, prices, or installation videos")
+        prompt_parts.append("4. ONLY say: 'I specialize in refrigerator and dishwasher parts only. For [appliance] parts, please visit PartSelect.com or contact their support team.'")
+        prompt_parts.append("\n⚠️ IGNORE ALL CONTEXT BELOW - IT IS IRRELEVANT FOR OUT-OF-SCOPE QUERIES.\n")
+    
+    # 3. Check for conflicts in retrieved documents
     conflict_warning = detect_conflicts(context_docs)
     if conflict_warning:
         prompt_parts.append(f"⚠️ {conflict_warning}")
         prompt_parts.append("Use the most recent/reliable source.\n")
     
-    # 4. Context from retrieved documents with relevance ordering (UPDATED)
+    # 4. Context from retrieved documents with relevance ordering
     context = format_context(context_docs, rerank=True)
     prompt_parts.append(context)
     prompt_parts.append("\n")
     
     # 5. Query-specific guidance (MINIMAL - just a hint)
     if query_analysis:
-        # Add query string to analysis for complexity checking
         if 'query' not in query_analysis:
             query_analysis['query'] = user_query
         
@@ -258,19 +266,36 @@ def build_rag_prompt(
     prompt_parts.append(f"USER QUESTION: {user_query}")
     prompt_parts.append("\n")
     
-    # 7. Final instruction with source attribution requirement (NEW)
-    prompt_parts.append(
-        "Answer based on the context above. "
-        "Follow the examples shown. "
-        "Cite sources using [Source N] when making factual claims."
-    )
+    # 7. Final instruction with source attribution requirement
+    if detected_out_of_scope:
+        # ✅ CRITICAL: When out-of-scope, completely ignore context
+        prompt_parts.append(
+            "🚨 CRITICAL INSTRUCTION: The user is asking about an appliance OUTSIDE your scope."
+        )
+        prompt_parts.append(
+            "DO NOT use any information from the context above - it is irrelevant."
+        )
+        prompt_parts.append(
+            "You MUST ONLY respond with: 'I specialize in refrigerator and dishwasher parts only. "
+            "For [appliance] parts, please visit PartSelect.com or contact their support team for assistance.'"
+        )
+        prompt_parts.append(
+            "DO NOT mention any parts, prices, or information from the context."
+        )
+    else:
+        prompt_parts.append(
+            "Answer based on the context above. "
+            "Follow the examples shown. "
+            "Cite sources using [Source N] when making factual claims."
+        )
     
-    # Check token budget (simple check)
+    # ✅ REMOVED: The duplicate reminder at the end - it's already in the instruction above
+    
+    # Check token budget
     full_prompt = "\n".join(prompt_parts)
     estimated_tokens = len(full_prompt) / 4
     
     if estimated_tokens > max_context_tokens:
-        # Log warning about token budget
         import logging
         logging.warning(f"Prompt exceeds token budget ({estimated_tokens:.0f} > {max_context_tokens}). Consider reducing k.")
     

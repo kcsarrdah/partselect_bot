@@ -9,6 +9,10 @@ from typing import Dict, Any, List, Optional
 from services.ingestion_pipeline import IngestionPipeline
 from services.llm_service import LLMService
 from prompts import build_rag_prompt, PARTSELECT_SYSTEM_PROMPT
+from utils.logger import setup_logger, log_pipeline_step, log_success, log_error, log_warning, log_metric
+from services.query_cache import QueryCache
+# Setup logger
+logger = setup_logger(__name__)
 
 
 class RAGService:
@@ -19,7 +23,8 @@ class RAGService:
         ingestion_pipeline: IngestionPipeline,
         llm_service: LLMService,
         system_prompt: str = PARTSELECT_SYSTEM_PROMPT,
-        default_k: int = 5
+        default_k: int = 5,
+        enable_cache: bool = True
     ):
         """
         Initialize RAG service with dependencies.
@@ -34,12 +39,21 @@ class RAGService:
         self.llm = llm_service
         self.system_prompt = system_prompt
         self.default_k = default_k
+
+            # Initialize query cache
+        self.cache_enabled = enable_cache
+        if self.cache_enabled:
+            self.cache = QueryCache()
+            log_success(logger, "Query cache enabled")
+        else:
+            self.cache = None
+            log_warning(logger, "Query cache disabled")
         
         # Stats tracking
         self.queries_processed = 0
         self.total_response_time = 0.0
         
-        print("✓ RAG Service initialized")
+        log_success(logger, "RAG Service initialized")
     
     def query(
         self,
@@ -64,37 +78,57 @@ class RAGService:
         k = k or self.default_k
         
         try:
-            print(f"\n{'='*60}")
-            print(f"RAG Query: {user_query}")
-            print(f"{'='*60}")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"RAG Query: {user_query}")
+            logger.info(f"{'='*60}")
+            if self.cache_enabled:
+                logger.info("🔍 Checking cache...")
+                cached = self.cache.get(user_query)
+                if cached:
+                    # Update stats
+                    self.queries_processed += 1
+                    response_time = time.time() - start_time
+                    
+                    tokens_saved = cached['metadata'].get('tokens_used', 0)
+                    log_success(logger, f"Cache hit! (saved {tokens_saved} tokens, {cached.get('cache_type', 'unknown')} match)")
+                    
+                    # Add response time for cache hit
+                    cached['metadata']['cache_response_time_seconds'] = round(response_time, 3)
+                    
+                    logger.info(f"\n{'='*60}")
+                    log_success(logger, f"Query Complete from Cache ({response_time:.3f}s)")
+                    logger.info(f"{'='*60}\n")
+                    
+                    return cached
             
             # Step 1: Retrieve context from vector store
-            print(f"\n📚 Step 1: Retrieving context (k={k})...")
+            log_pipeline_step(logger, 1, "Retrieving context")
+            logger.info(f"🔍 Searching for: '{user_query}' (k={k})")
             context_docs = self._retrieve_context(user_query, k, filter_type)
             
             if not context_docs:
                 return self._handle_no_context(user_query)
             
-            print(f"   ✓ Retrieved {len(context_docs)} documents")
+            log_success(logger, f"Retrieved {len(context_docs)} documents")
             
             # Step 2: Build prompt with context
-            print(f"\n📝 Step 2: Building prompt...")
+            log_pipeline_step(logger, 2, "Building prompt")
             prompt = self._build_prompt(user_query, context_docs, include_examples)
-            print(f"   ✓ Prompt built ({len(prompt)} chars)")
+            log_metric(logger, "Prompt size", f"{len(prompt)} chars")
             
             # Step 3: Generate LLM response
-            print(f"\n🤖 Step 3: Generating response...")
+            log_pipeline_step(logger, 3, "Generating response")
             llm_result = self.llm.generate(prompt)
             
             if llm_result['status_code'] != 200:
                 return self._handle_llm_error(llm_result)
             
-            print(f"   ✓ Response generated")
+            log_success(logger, "Response generated")
             
             # Step 4: Extract and format sources
-            print(f"\n📋 Step 4: Extracting sources...")
+            log_pipeline_step(logger, 4, "Extracting sources")
             sources = self._extract_sources(context_docs)
-            print(f"   ✓ Extracted {len(sources)} sources")
+            log_success(logger, f"Extracted {len(sources)} sources")
             
             # Calculate response time
             response_time = time.time() - start_time
@@ -118,15 +152,18 @@ class RAGService:
                     "filter_type": filter_type
                 }
             }
+            # CACHE THE RESULT
+            if self.cache_enabled:
+                self.cache.set(user_query, result)
             
-            print(f"\n{'='*60}")
-            print(f"✅ Query Complete ({response_time:.2f}s, {llm_result['usage']['total_tokens']} tokens)")
-            print(f"{'='*60}\n")
+            logger.info(f"\n{'='*60}")
+            log_success(logger, f"Query Complete ({response_time:.2f}s, {llm_result['usage']['total_tokens']} tokens)")
+            logger.info(f"{'='*60}\n")
             
             return result
         
         except Exception as e:
-            print(f"\n❌ RAG Query failed: {e}")
+            log_error(logger, f"RAG Query failed: {e}")
             return {
                 "status_code": 500,
                 "status": "error",
@@ -159,13 +196,13 @@ class RAGService:
                 result = self.pipeline.search(query, k=k)
             
             if result['status_code'] != 200:
-                print(f"   ⚠️  Search returned status {result['status_code']}")
+                log_warning(logger, f"Search returned status {result['status_code']}")
                 return []
             
             return result.get('results', [])
         
         except Exception as e:
-            print(f"   ✗ Retrieval error: {e}")
+            log_error(logger, f"Retrieval error: {e}")
             return []
     
     def _build_prompt(
@@ -239,7 +276,7 @@ class RAGService:
     
     def _handle_no_context(self, user_query: str) -> Dict[str, Any]:
         """Handle case where no relevant context is found."""
-        print("   ⚠️  No relevant context found")
+        log_warning(logger, "No relevant context found")
         
         return {
             "status_code": 404,
@@ -255,7 +292,7 @@ class RAGService:
     
     def _handle_llm_error(self, llm_result: Dict[str, Any]) -> Dict[str, Any]:
         """Handle LLM generation errors."""
-        print(f"   ✗ LLM error: {llm_result.get('message')}")
+        log_error(logger, f"LLM error: {llm_result.get('message')}")
         
         return {
             "status_code": llm_result['status_code'],
@@ -280,13 +317,19 @@ class RAGService:
         # Get vector store stats
         vector_stats = self.pipeline.get_status()
         
-        return {
+        stats = {
             "queries_processed": self.queries_processed,
             "average_response_time": round(avg_response_time, 2),
             "vector_store_docs": vector_stats.get('total_documents', 0),
             "llm_model": self.llm.model,
             "default_k": self.default_k
         }
+        
+        # 🆕 ADD CACHE STATS
+        if self.cache_enabled and self.cache:
+            stats["cache_stats"] = self.cache.get_stats()
+        
+        return stats
     
     def health_check(self) -> Dict[str, Any]:
         """

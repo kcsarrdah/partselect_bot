@@ -14,13 +14,47 @@
   top: 0;
   left: 0;
   width: 100%;
-  background: rgba(255, 255, 255); 
   background: #E6B951;
   box-shadow: 0px 2px 4px rgba(0, 0, 0, 0.1);
   display: flex;
-  font-weight: 700;
-  font-size: 16px;
-  justify-content: center;
+  justify-content: space-between; /* Changed from center */
   align-items: center;
   height: 60px;
+  padding: 0 20px;
+  box-sizing: border-box;
+  z-index: 1001; /* Above everything */
+}
+
+.logo {
+  height: 40px;
+  width: auto;
+  background-color: white;
+  padding: 5px 10px;
+  border-radius: 5px;
+}
+
+.heading-text {
+  font-weight: 700;
+  font-size: 18px;
+  margin-left: 10px;
+  flex: 1;
+}
+
+.clear-button-header {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 5px;
+  background-color: rgba(255, 255, 255, 0.9);
+  color: #333;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.clear-button-header:hover {
+  background-color: rgba(255, 255, 255, 1);
 }

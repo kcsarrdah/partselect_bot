@@ -43,18 +43,13 @@ Solution: {repair_doc.get('page_content', '')}"""
 
 
 def format_blog_info(blog_doc: Dict[str, Any]) -> str:
-    """
-    Format blog post document for context.
+    title = blog_doc.get('title', 'N/A')
+    url = blog_doc.get('url', 'N/A')
+    content = blog_doc.get('page_content', '')
     
-    Args:
-        blog_doc: Blog document with metadata
-    
-    Returns:
-        Formatted blog information
-    """
-    return f"""Article: {blog_doc.get('title', 'N/A')}
-URL: {blog_doc.get('url', 'N/A')}
-Content: {blog_doc.get('page_content', '')}"""
+    # Format as markdown link so LLM can copy it directly
+    return f"""Article: [{title}]({url})
+Content: {content}"""
 
 
 def format_context(documents: List[Dict[str, Any]]) -> str:
@@ -134,8 +129,10 @@ def build_rag_prompt(
     prompt_parts.append("\n")
     
     # Instructions
+    # Instructions
     prompt_parts.append("Please answer the user's question based on the context provided above.")
-    prompt_parts.append("Cite specific part numbers and sources when relevant.")
+    prompt_parts.append("When citing blog articles, copy the markdown link format EXACTLY as shown in the context.")
+    prompt_parts.append("For example, if context shows [Article Title](URL), include that exact same markdown link in your response.")
     prompt_parts.append("If the context doesn't contain enough information, say so.")
     
     return "\n".join(prompt_parts)
@@ -176,5 +173,5 @@ def get_prompt_stats(prompt: str) -> Dict[str, Any]:
         "total_chars": len(prompt),
         "total_words": len(words),
         "total_lines": len(lines),
-        "estimated_tokens": len(words) * 1.3  # Rough estimate
+        "estimated_tokens": len(prompt) / 4  # Rough estimate: 1 token ≈ 4 chars
     }

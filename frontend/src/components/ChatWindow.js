@@ -3,6 +3,15 @@ import { getAIMessage } from "../api/api";
 import { marked } from "marked";
 import { themeColors, colors } from "../constants/colors";
 
+// Configure marked to open links in new tabs
+marked.use({
+  renderer: {
+    link(href, title, text) {
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${title || ''}">${text}</a>`;
+    }
+  }
+});
+
 // Loading status messages - defined outside component since they never change
 const LOADING_MESSAGES = [
   "Running around the warehouse...",
@@ -12,13 +21,7 @@ const LOADING_MESSAGES = [
   "Almost there..."
 ];
 
-function ChatWindow() {
-  const defaultMessage = [{
-    role: "assistant",
-    content: "Hi, how can I help you today?"
-  }];
-
-  const [messages, setMessages] = useState(defaultMessage);
+function ChatWindow({ messages, setMessages }) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState("");

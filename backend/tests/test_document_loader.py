@@ -96,14 +96,18 @@ class TestDocumentLoader:
         """
         TEST: Verify all parts metadata fields are correctly populated
         
-        GIVEN: A CSV with 2 parts containing part_id, mpn_id, brand, price, etc.
+        GIVEN: A CSV with 2 parts containing all 13 fields (part_id, mpn_id, brand, price, 
+               install_time, symptoms, product_types, replace_parts, availability, 
+               install_video_url, product_url, etc.)
         WHEN: load_parts_csv() is called with appliance_type='refrigerator'
         THEN: 
             - Returns 2 documents with source='parts', type='part'
-            - Metadata includes: part_id, mpn_id, brand, price, difficulty, appliance
+            - Metadata includes all 16 fields: part_id, mpn_id, brand, price, difficulty, 
+              install_time, symptoms, product_types, replace_parts, availability, 
+              install_video_url, product_url, appliance, source, type, doc_id
             - appliance metadata matches the provided appliance_type
         
-        PURPOSE: Verify metadata extraction - all fields from CSV map to metadata
+        PURPOSE: Verify metadata extraction - all 13 CSV fields + 3 generated fields map to metadata
         """
         # Arrange
         parts_path = os.path.join(fixtures_dir, "test_parts.csv")
@@ -124,7 +128,15 @@ class TestDocumentLoader:
         assert doc.metadata['brand'] == 'GE'
         assert doc.metadata['price'] == '$50.00'
         assert doc.metadata['difficulty'] == 'Easy'
-        assert 'url' in doc.metadata
+        
+        # Check new metadata fields (7 additional fields from real data)
+        assert doc.metadata['install_time'] == '15 min'
+        assert doc.metadata['symptoms'] == 'Ice maker not working'
+        assert doc.metadata['product_types'] == 'Refrigerator'
+        assert doc.metadata['replace_parts'] == 'WR999'
+        assert doc.metadata['availability'] == 'In Stock'
+        assert doc.metadata['install_video_url'] == 'https://youtube.com/test1'
+        assert doc.metadata['product_url'] == 'https://partselect.com/test1'
     
     def test_load_parts_csv_content_format(self, loader, fixtures_dir):
         """

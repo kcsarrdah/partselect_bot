@@ -1,64 +1,79 @@
 """
-Test script for RAG Service
-Tests end-to-end RAG workflow.
+Unit tests for RAG Service (including cache integration)
 """
-
+import pytest
 from services.ingestion_pipeline import IngestionPipeline
 from services.llm_service import LLMService
 from services.rag_service import RAGService
 
 
-if __name__ == "__main__":
-    print("\n=== Testing RAG Service ===\n")
+class TestRAGServiceCache:
+    @pytest.fixture
+    def rag_service(self):
+        """Create RAG service with test dependencies"""
+        pipeline = IngestionPipeline(
+            collection_name="partselect_test",
+            persist_directory="tests/test_data/vector_store_test"
+        )
+        llm = LLMService(model="google/gemma-3-27b-it:free")
+        return RAGService(
+            ingestion_pipeline=pipeline,
+            llm_service=llm,
+            enable_cache=True
+        )
     
-    # Initialize dependencies
-    print("Step 1: Loading dependencies...")
-    pipeline = IngestionPipeline(
-        collection_name="partselect_test",
-        persist_directory="tests/test_data/vector_store_test"
-    )
+    def test_cache_enabled_by_default(self, rag_service):
+        """TEST: RAG service has cache enabled"""
+        assert rag_service.cache_enabled == True
+        assert rag_service.cache is not None
     
-    llm = LLMService(model="google/gemma-3-27b-it:free")
-    
-    # Initialize RAG service
-    print("\nStep 2: Initializing RAG service...")
-    rag = RAGService(ingestion_pipeline=pipeline, llm_service=llm)
-    
-    # Health check
-    print("\nStep 3: Health check...")
-    health = rag.health_check()
-    print(f"   Status: {health['status']}")
-    print(f"   Docs in store: {health.get('vector_docs', 0)}")
-    
-    if health['status_code'] != 200:
-        print(f"\n❌ System not healthy: {health.get('reason')}")
-        print("   Make sure to run ingestion pipeline first!")
-        exit(1)
-    
-    # Test query
-    print("\nStep 4: Test RAG query...")
-    result = rag.query("What should I do if my ice maker isn't working?", k=3)
-    
-    if result['status_code'] == 200:
-        print(f"\n✅ Query succeeded!")
-        print(f"   Answer: {result['answer'][:150]}...")
-        print(f"   Sources: {len(result['sources'])}")
-        print(f"   Tokens: {result['metadata']['tokens_used']}")
-        print(f"   Time: {result['metadata']['response_time_seconds']}s")
+    def test_first_query_runs_rag_pipeline(self, rag_service):
+    # Clear cache to ensure fresh start
+        if rag_service.cache_enabled:
+            rag_service.cache.clear()
         
-        # Show sources
-        print(f"\n   Sources retrieved:")
-        for i, source in enumerate(result['sources'][:3], 1):
-            print(f"     {i}. Type: {source['type']}, Score: {source['score']:.3f}")
-    else:
-        print(f"\n❌ Query failed: {result.get('message')}")
+        query = "test query unique 12345"
+        result = rag_service.query(query, k=3)
+        
+        assert result['status_code'] == 200
+        assert 'cached' not in result or result.get('cached') == False
     
-    # Stats
-    print("\nStep 5: Service stats...")
-    stats = rag.get_stats()
-    print(f"   Queries processed: {stats['queries_processed']}")
-    print(f"   Avg response time: {stats['average_response_time']}s")
-    print(f"   Vector store docs: {stats['vector_store_docs']}")
-    print(f"   LLM model: {stats['llm_model']}")
+    def test_duplicate_query_uses_cache(self, rag_service):
+        """TEST: Duplicate query returns cached result"""
+        query = "what is an ice maker"
+        
+        # First query (cache miss)
+        result1 = rag_service.query(query, k=3)
+        
+        # Second query (should hit cache)
+        result2 = rag_service.query(query, k=3)
+        
+        assert result2.get('cached') == True
+        assert result2['cache_type'] in ['exact', 'semantic']
     
-    print("\n=== RAG Service Test Complete ===\n")
+    def test_cache_stats_in_get_stats(self, rag_service):
+        """TEST: get_stats() includes cache statistics"""
+        # Run a query to populate cache
+        rag_service.query("test query for stats", k=3)
+        
+        stats = rag_service.get_stats()
+        
+        assert 'cache_stats' in stats
+        assert 'total_cached_queries' in stats['cache_stats']
+        assert 'cache_hit_rate' in stats['cache_stats']
+    
+    def test_cache_disabled_mode(self):
+        """TEST: RAG can run with cache disabled"""
+        pipeline = IngestionPipeline(
+            collection_name="partselect_test",
+            persist_directory="tests/test_data/vector_store_test"
+        )
+        llm = LLMService(model="google/gemma-3-27b-it:free")
+        rag = RAGService(
+            ingestion_pipeline=pipeline,
+            llm_service=llm,
+            enable_cache=False
+        )
+        
+        assert rag.cache_enabled == False
+        assert rag.cache is None

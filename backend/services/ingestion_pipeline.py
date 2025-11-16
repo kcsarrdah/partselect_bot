@@ -4,7 +4,7 @@ Orchestrates the RAG data pipeline: Load → Chunk → Embed → Store in Chroma
 """
 
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
@@ -154,7 +154,10 @@ class IngestionPipeline:
         self,
         data_dir: str = "data/raw",
         batch_size: int = 32,
-        force_rebuild: bool = False
+        force_rebuild: bool = False,
+        blog_files: List[str] = None,
+        parts_files: Dict[str, str] = None,
+        repairs_files: Dict[str, str] = None
     ) -> Dict[str, Any]:
         """
         Run the full ingestion pipeline: Load → Chunk → Embed → Store
@@ -163,6 +166,9 @@ class IngestionPipeline:
             data_dir: Directory containing CSV files to ingest
             batch_size: Number of documents to process at once
             force_rebuild: If True, delete existing collection and rebuild
+            blog_files: List of blog CSV filenames (optional, auto-discovers if None)
+            parts_files: Dict of {appliance_type: filename} for parts (optional)
+            repairs_files: Dict of {appliance_type: filename} for repairs (optional)
         
         Returns:
             Dictionary with pipeline execution statistics
@@ -183,7 +189,11 @@ class IngestionPipeline:
             # Step 1: Load documents from CSVs
             print(f"📂 Step 1: Loading documents from {data_dir}...")
             loader = DocumentLoader(data_dir=data_dir)
-            documents = loader.load_all_documents()
+            documents = loader.load_all_documents(
+                blog_files=blog_files,
+                parts_files=parts_files,
+                repairs_files=repairs_files
+            )
             
             if not documents:
                 return {
@@ -244,7 +254,7 @@ class IngestionPipeline:
                 "documents_chunked": len(chunks),
                 "documents_stored": total_added,
                 "total_in_collection": final_count,
-                "time_taken_seconds": round(time_taken, 2),
+                "ingestion_time_seconds": round(time_taken, 2),
                 "collection_name": self.collection_name,
                 "data_dir": data_dir
             }
@@ -258,7 +268,7 @@ class IngestionPipeline:
                 "status_code": 500,
                 "status": "error",
                 "message": str(e),
-                "time_taken_seconds": round(time.time() - start_time, 2)
+                "ingestion_time_seconds": round(time.time() - start_time, 2)
             }
 
 

@@ -39,6 +39,23 @@ class Source(BaseModel):
     url: Optional[str] = None
 
 
+class PopularQuery(BaseModel):
+    """Popular cached query model."""
+    query: str
+    hits: int
+
+
+class CacheStats(BaseModel):
+    """Cache statistics model."""
+    total_cached_queries: int
+    total_cache_hits: int
+    cache_hit_rate: float
+    estimated_tokens_saved: int
+    estimated_cost_saved_usd: float
+    popular_queries: List[PopularQuery]
+    similarity_threshold: float
+
+
 class ChatMetadata(BaseModel):
     """Metadata about the chat response."""
     retrieved_docs: int
@@ -46,6 +63,7 @@ class ChatMetadata(BaseModel):
     response_time_seconds: float
     model: str
     filter_type: Optional[str] = None
+    cache_response_time_seconds: Optional[float] = None
 
 
 class ChatResponse(BaseModel):
@@ -101,6 +119,7 @@ class StatsResponse(BaseModel):
     vector_store_docs: int
     llm_model: str
     default_k: int
+    cache_stats: Optional[CacheStats] = None
 
 
 class ErrorResponse(BaseModel):

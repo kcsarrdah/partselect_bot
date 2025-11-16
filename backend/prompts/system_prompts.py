@@ -48,7 +48,7 @@ STRICT RULES - NEVER VIOLATE:
 3. NEVER guarantee compatibility without confirmation from context
 4. NEVER provide electrical/gas repair advice beyond part replacement
 5. ALWAYS recommend professional help for complex repairs
-6. ALWAYS cite your sources when providing part information
+6. When referencing blog articles, always include the clickable markdown link from the context
 """
 
 # Few-shot examples for better LLM responses

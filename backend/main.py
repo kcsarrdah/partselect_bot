@@ -16,6 +16,10 @@ from models.schemas import (
     ChatRequest, ChatResponse, HealthResponse, 
     StatsResponse, ErrorResponse
 )
+from utils.logger import setup_logger, log_success, log_error, log_warning
+
+# Setup logger
+logger = setup_logger(__name__)
 
 # Global service instances
 rag_service = None
@@ -30,13 +34,13 @@ async def lifespan(app: FastAPI):
     """
     global rag_service, ingestion_pipeline, llm_service
     
-    print("\n" + "="*60)
-    print("🚀 Starting PartSelect Chat Agent API")
-    print("="*60 + "\n")
+    logger.info("\n" + "="*60)
+    logger.info("🚀 Starting PartSelect Chat Agent API")
+    logger.info("="*60 + "\n")
     
     try:
         # Initialize services
-        print("📦 Initializing services...")
+        logger.info("📦 Initializing services...")
         
         # Initialize ingestion pipeline
         ingestion_pipeline = IngestionPipeline(
@@ -47,13 +51,13 @@ async def lifespan(app: FastAPI):
         # Check if vector store is empty and needs ingestion
         status = ingestion_pipeline.get_status()
         if status['total_documents'] == 0:
-            print("\n⚠️  Vector store is empty. Running ingestion pipeline...")
+            log_warning(logger, "Vector store is empty. Running ingestion pipeline...")
             result = ingestion_pipeline.run_pipeline(data_dir="data/raw")
             if result['status_code'] != 200:
                 raise Exception(f"Ingestion failed: {result['message']}")
-            print(f"✅ Ingestion complete: {result['total_in_collection']} documents loaded")
+            log_success(logger, f"Ingestion complete: {result['total_in_collection']} documents loaded")
         else:
-            print(f"✅ Vector store loaded: {status['total_documents']} documents")
+            log_success(logger, f"Vector store loaded: {status['total_documents']} documents")
         
         # Initialize LLM service
         llm_service = LLMService(model="google/gemma-3-27b-it:free")
@@ -64,21 +68,21 @@ async def lifespan(app: FastAPI):
             llm_service=llm_service
         )
         
-        print("\n" + "="*60)
-        print("✅ All services initialized successfully!")
-        print("📍 API running at: http://localhost:8000")
-        print("📚 Docs available at: http://localhost:8000/docs")
-        print("="*60 + "\n")
+        logger.info("\n" + "="*60)
+        log_success(logger, "All services initialized successfully!")
+        logger.info("📍 API running at: http://localhost:8000")
+        logger.info("📚 Docs available at: http://localhost:8000/docs")
+        logger.info("="*60 + "\n")
         
         yield  # App runs here
         
     except Exception as e:
-        print(f"\n❌ Startup failed: {e}\n")
+        log_error(logger, f"Startup failed: {e}")
         raise
     
     finally:
         # Cleanup on shutdown
-        print("\n🛑 Shutting down PartSelect Chat Agent API\n")
+        logger.info("\n🛑 Shutting down PartSelect Chat Agent API\n")
 
 
 # Initialize FastAPI app
@@ -150,7 +154,7 @@ async def chat(request: ChatRequest):
         )
     
     try:
-        print(f"\n📨 New chat request: {request.query[:50]}...")
+        logger.info(f"\n📨 New chat request: {request.query[:50]}...")
         start_time = time.time()
         
         # Process query
@@ -169,14 +173,14 @@ async def chat(request: ChatRequest):
                 raise HTTPException(status_code=500, detail=result.get('message'))
         
         elapsed = time.time() - start_time
-        print(f"✅ Chat request completed in {elapsed:.2f}s\n")
+        log_success(logger, f"Chat request completed in {elapsed:.2f}s\n")
         
         return result
     
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Chat request failed: {e}\n")
+        log_error(logger, f"Chat request failed: {e}\n")
         raise HTTPException(status_code=500, detail=str(e))
 
 

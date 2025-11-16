@@ -9,6 +9,9 @@ import os
 import csv
 from typing import List, Dict, Any
 from langchain_core.documents import Document
+from utils.logger import setup_logger, log_success, log_warning, log_error
+
+logger = setup_logger(__name__)
 
 
 class DocumentLoader:
@@ -36,7 +39,7 @@ class DocumentLoader:
             List of Document objects
         """
         if not os.path.exists(file_path):
-            print(f"Warning: {file_path} not found, skipping blogs.")
+            log_warning(logger, f"{file_path} not found, skipping blogs.")
             return []
         
         documents = []
@@ -48,7 +51,7 @@ class DocumentLoader:
                 for idx, row in enumerate(reader):
                     # Skip rows with missing critical data
                     if not row.get('title') or not row.get('url'):
-                        print(f"Warning: Skipping blog row {idx} - missing title or url")
+                        log_warning(logger, f"Skipping blog row {idx} - missing title or url")
                         continue
                     
                     # Create page content
@@ -69,10 +72,10 @@ URL: {row['url']}"""
                         metadata=metadata
                     ))
             
-            print(f"Loaded {len(documents)} blog documents from {file_path}")
+            log_success(logger, f"Loaded {len(documents)} blog documents")
             
         except Exception as e:
-            print(f"Error loading blogs CSV: {e}")
+            log_error(logger, f"Error loading blogs CSV: {e}")
             return []
         
         return documents
@@ -93,7 +96,7 @@ URL: {row['url']}"""
             List of Document objects
         """
         if not os.path.exists(file_path):
-            print(f"Warning: {file_path} not found, skipping {appliance_type} parts.")
+            log_warning(logger, f"{file_path} not found, skipping {appliance_type} parts.")
             return []
         
         documents = []
@@ -105,7 +108,7 @@ URL: {row['url']}"""
                 for idx, row in enumerate(reader):
                     # Skip rows with missing critical data
                     if not row.get('part_name'):
-                        print(f"Warning: Skipping part row {idx} - missing part_name")
+                        log_warning(logger, f"Skipping part row {idx} - missing part_name")
                         continue
                     
                     # Create rich page content
@@ -132,7 +135,13 @@ Replaces parts: {row.get('replace_parts', 'N/A')}"""
                         "brand": row.get('brand', 'N/A'),
                         "price": row.get('part_price', 'N/A'),
                         "difficulty": row.get('install_difficulty', 'N/A'),
-                        "url": row.get('product_url', 'N/A'),
+                        "install_time": row.get('install_time', 'N/A'),
+                        "symptoms": row.get('symptoms', 'N/A'),
+                        "product_types": row.get('product_types', 'N/A'),
+                        "replace_parts": row.get('replace_parts', 'N/A'),
+                        "availability": row.get('availability', 'N/A'),
+                        "install_video_url": row.get('install_video_url', ''),
+                        "product_url": row.get('product_url', 'N/A'),
                         "doc_id": f"part_{appliance_type}_{row.get('part_id', idx)}"
                     }
                     
@@ -141,10 +150,10 @@ Replaces parts: {row.get('replace_parts', 'N/A')}"""
                         metadata=metadata
                     ))
             
-            print(f"Loaded {len(documents)} {appliance_type} part documents from {file_path}")
+            log_success(logger, f"Loaded {len(documents)} {appliance_type} part documents")
             
         except Exception as e:
-            print(f"Error loading parts CSV: {e}")
+            log_error(logger, f"Error loading parts CSV: {e}")
             return []
         
         return documents
@@ -164,7 +173,7 @@ Replaces parts: {row.get('replace_parts', 'N/A')}"""
             List of Document objects
         """
         if not os.path.exists(file_path):
-            print(f"Warning: {file_path} not found, skipping {appliance_type} repairs.")
+            log_warning(logger, f"{file_path} not found, skipping {appliance_type} repairs.")
             return []
         
         documents = []
@@ -176,7 +185,7 @@ Replaces parts: {row.get('replace_parts', 'N/A')}"""
                 for idx, row in enumerate(reader):
                     # Skip rows with missing critical data
                     if not row.get('symptom'):
-                        print(f"Warning: Skipping repair row {idx} - missing symptom")
+                        log_warning(logger, f"Skipping repair row {idx} - missing symptom")
                         continue
                     
                     # Create problem-focused page content
@@ -209,61 +218,92 @@ Video guide available: {video_text}"""
                         metadata=metadata
                     ))
             
-            print(f"Loaded {len(documents)} {appliance_type} repair documents from {file_path}")
+            log_success(logger, f"Loaded {len(documents)} {appliance_type} repair documents")
             
         except Exception as e:
-            print(f"Error loading repairs CSV: {e}")
+            log_error(logger, f"Error loading repairs CSV: {e}")
             return []
         
         return documents
     
-    def load_all_documents(self) -> List[Document]:
+    def load_all_documents(
+        self,
+        blog_files: List[str] = None,
+        parts_files: Dict[str, str] = None,
+        repairs_files: Dict[str, str] = None
+    ) -> List[Document]:
         """
         Load all CSV files and return combined list of documents.
+        
+        Args:
+            blog_files: List of blog CSV filenames. If None, auto-discovers.
+            parts_files: Dict of {appliance_type: filename}. If None, auto-discovers.
+            repairs_files: Dict of {appliance_type: filename}. If None, auto-discovers.
         
         Returns:
             List of all Document objects from all sources
         """
+        import glob
+        
         all_documents = []
+        logger.info("\n=== Loading all documents ===")
         
-        print("\n=== Loading all documents ===")
+        # === LOAD BLOGS ===
+        if blog_files is None:
+            blog_pattern = os.path.join(self.data_dir, "*blog*.csv")
+            blog_files = [os.path.basename(f) for f in glob.glob(blog_pattern)]
         
-        # Try different file naming patterns (test fixtures or real data)
-        blog_files = ["test_blogs.csv", "partselect_blogs_test.csv", "partselect_blogs.csv"]
-        for filename in blog_files:
-            blogs_path = os.path.join(self.data_dir, filename)
-            if os.path.exists(blogs_path):
-                all_documents.extend(self.load_blogs_csv(blogs_path))
-                break
+        for blog_file in blog_files:
+            file_path = os.path.join(self.data_dir, blog_file)
+            if os.path.exists(file_path):
+                logger.info(f"📰 Loading blog: {blog_file}")
+                all_documents.extend(self.load_blogs_csv(file_path))
         
-        # Load refrigerator parts
-        part_files = ["test_parts.csv", "refrigerator_parts_test.csv", "refrigerator_parts.csv"]
-        for filename in part_files:
-            fridge_parts_path = os.path.join(self.data_dir, filename)
-            if os.path.exists(fridge_parts_path):
-                all_documents.extend(self.load_parts_csv(fridge_parts_path, "refrigerator"))
-                break
+        # === LOAD PARTS ===
+        if parts_files is None:
+            parts_pattern = os.path.join(self.data_dir, "*part*.csv")
+            discovered_parts = glob.glob(parts_pattern)
+            
+            parts_files = {}
+            for file_path in discovered_parts:
+                filename = os.path.basename(file_path).lower()
+                if "refrigerator" in filename or "fridge" in filename:
+                    parts_files["refrigerator"] = os.path.basename(file_path)
+                elif "dishwasher" in filename or "dish" in filename:
+                    parts_files["dishwasher"] = os.path.basename(file_path)
+                else:
+                    appliance_type = os.path.splitext(os.path.basename(file_path))[0].replace("_parts", "").replace("_part", "")
+                    parts_files[appliance_type] = os.path.basename(file_path)
         
-        # Load dishwasher parts (optional)
-        dish_parts_path = os.path.join(self.data_dir, "dishwasher_parts_test.csv")
-        if os.path.exists(dish_parts_path):
-            all_documents.extend(self.load_parts_csv(dish_parts_path, "dishwasher"))
+        for appliance_type, filename in parts_files.items():
+            file_path = os.path.join(self.data_dir, filename)
+            if os.path.exists(file_path):
+                logger.info(f"🔧 Loading {appliance_type} parts: {filename}")
+                all_documents.extend(self.load_parts_csv(file_path, appliance_type))
         
-        # Load refrigerator repairs
-        repair_files = ["test_repairs.csv", "refrigerator_repairs_test.csv", "refrigerator_repairs.csv"]
-        for filename in repair_files:
-            fridge_repairs_path = os.path.join(self.data_dir, filename)
-            if os.path.exists(fridge_repairs_path):
-                all_documents.extend(self.load_repairs_csv(fridge_repairs_path, "refrigerator"))
-                break
+        # === LOAD REPAIRS ===
+        if repairs_files is None:
+            repairs_pattern = os.path.join(self.data_dir, "*repair*.csv")
+            discovered_repairs = glob.glob(repairs_pattern)
+            
+            repairs_files = {}
+            for file_path in discovered_repairs:
+                filename = os.path.basename(file_path).lower()
+                if "refrigerator" in filename or "fridge" in filename:
+                    repairs_files["refrigerator"] = os.path.basename(file_path)
+                elif "dishwasher" in filename or "dish" in filename:
+                    repairs_files["dishwasher"] = os.path.basename(file_path)
+                else:
+                    appliance_type = os.path.splitext(os.path.basename(file_path))[0].replace("_repairs", "").replace("_repair", "")
+                    repairs_files[appliance_type] = os.path.basename(file_path)
         
-        # Load dishwasher repairs (optional)
-        dish_repairs_path = os.path.join(self.data_dir, "dishwasher_repairs_test.csv")
-        if os.path.exists(dish_repairs_path):
-            all_documents.extend(self.load_repairs_csv(dish_repairs_path, "dishwasher"))
+        for appliance_type, filename in repairs_files.items():
+            file_path = os.path.join(self.data_dir, filename)
+            if os.path.exists(file_path):
+                logger.info(f"🔨 Loading {appliance_type} repairs: {filename}")
+                all_documents.extend(self.load_repairs_csv(file_path, appliance_type))
         
-        print(f"\n=== Total documents loaded: {len(all_documents)} ===\n")
-        
+        log_success(logger, f"Total documents loaded: {len(all_documents)}")
         return all_documents
 
 
@@ -284,12 +324,12 @@ def load_documents(data_dir: str = "data/raw") -> List[Document]:
 
 if __name__ == "__main__":
     # Test the loader
-    print("Testing Document Loader...")
+    logger.info("Testing Document Loader...")
     documents = load_documents()
     
     if documents:
-        print(f"\nSample document:")
-        print(f"Content: {documents[0].page_content[:200]}...")
-        print(f"Metadata: {documents[0].metadata}")
+        logger.info(f"\nSample document:")
+        logger.info(f"Content: {documents[0].page_content[:200]}...")
+        logger.info(f"Metadata: {documents[0].metadata}")
     else:
-        print("No documents loaded.")
+        log_warning(logger, "No documents loaded.")

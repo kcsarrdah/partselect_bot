@@ -16,9 +16,17 @@ Frontend runs at `http://localhost:3000`
 ### Backend
 ```bash
 cd backend
+
+# create a .env file and add the following
+
+OPENROUTER_API_KEY=your_key_here
+LLM_PROVIDER=openrouter
+LLM_MODEL=google/gemma-3-27b-it:free
+
 python3 -m venv venv
 source venv/bin/activate  # On macOS/Linux
-pip install -r requirements.txt### Build Vector Store (Production Data)
+pip install -r requirements.txt
+### Build Vector Store (Production Data)
 cd backend
 source venv/bin/activate
 python3 -m services.ingestion_pipeline  # Or create your own ingestion script## Testing

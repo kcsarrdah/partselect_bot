@@ -55,3 +55,11 @@ pytest tests/test_embedding_service.py -v
 pytest tests/test_ingestion_pipeline.py -v
 pytest tests/test_query_cache.py -v
 ```
+
+## Architecture Diagrams
+
+### System Architecture
+![System Architecture Diagram](System%20Diagram.png)
+
+### RAG Service Flow
+![RAG Architecture Diagram](Rag_Architecture.png)

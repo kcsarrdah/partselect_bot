@@ -117,15 +117,7 @@ class RAGService:
         """
         start_time = time.time()
         
-        # ✅ CALL: Analyze query first
-        analysis = self._analyze_query(user_query)
-        
-        # ✅ CALL: Check if retrieval is needed (NEW)
-        if not self._should_retrieve(user_query, analysis):
-            logger.info("📝 Query can be answered without retrieval")
-            return self._answer_without_retrieval(user_query, analysis)
-        
-        # Check cache first (before any processing)
+        # ✅ FIX: Check cache FIRST (before any processing)
         if self.cache_enabled:
             logger.info("🔍 Checking cache...")
             cached = self.cache.get(user_query)
@@ -141,6 +133,18 @@ class RAGService:
                 logger.info(f"{'='*60}\n")
                 
                 return cached
+        
+        # ✅ CALL: Analyze query
+        analysis = self._analyze_query(user_query)
+        
+        # ✅ CALL: Check if retrieval is needed (NEW)
+        if not self._should_retrieve(user_query, analysis):
+            logger.info("📝 Query can be answered without retrieval")
+            result = self._answer_without_retrieval(user_query, analysis, start_time)
+            # ✅ FIX: Cache parametric-only responses too
+            if self.cache_enabled:
+                self.cache.set(user_query, result)
+            return result
         
         # Determine if we should use self-consistency
         is_critical_query = (
@@ -283,13 +287,14 @@ class RAGService:
         return True  # Default: retrieve
     
     # ✅ NEW METHOD: answer without retrieval
-    def _answer_without_retrieval(self, query: str, analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def _answer_without_retrieval(self, query: str, analysis: Dict[str, Any], start_time: float) -> Dict[str, Any]:
         """
         Answer general questions without retrieval using LLM's parametric knowledge.
         
         Args:
             query: User query
             analysis: Query analysis
+            start_time: Start time for response time calculation
         
         Returns:
             Response dictionary
@@ -307,6 +312,8 @@ Please answer this general question to the best of your ability. If you need spe
         if llm_result['status_code'] != 200:
             return self._handle_llm_error(llm_result)
         
+        response_time = time.time() - start_time
+        
         return {
             "status_code": 200,
             "status": "success",
@@ -317,7 +324,8 @@ Please answer this general question to the best of your ability. If you need spe
                 "retrieved_docs": 0,
                 "tokens_used": llm_result['usage']['total_tokens'],
                 "model": llm_result['model'],
-                "method": "parametric_only"
+                "method": "parametric_only",
+                "response_time_seconds": round(response_time, 2)
             }
         }
     

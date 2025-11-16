@@ -7,7 +7,33 @@ import { themeColors, colors } from "../constants/colors";
 marked.use({
   renderer: {
     link(href, title, text) {
-      return `<a href="${href}" target="_blank" rel="noopener noreferrer" title="${title || ''}">${text}</a>`;
+      // Handle case where href is a token object (marked.js v4+)
+      let actualHref = href;
+      let actualText = text;
+      let actualTitle = title;
+      
+      if (typeof href === 'object' && href !== null) {
+        // It's a token object, extract the values
+        actualHref = href.href || href.url || href;
+        actualText = href.text || text || '';
+        actualTitle = href.title || title || null;
+      }
+      
+      // Validate href - if it's undefined, null, or not a string, don't render the link
+      if (!actualHref || typeof actualHref !== 'string' || actualHref === 'undefined' || actualHref === 'null') {
+        // Just return the text without the link
+        return actualText || '';
+      }
+      
+      // Ensure href is properly formatted
+      const safeHref = actualHref.trim();
+      if (!safeHref.startsWith('http://') && !safeHref.startsWith('https://')) {
+        // If it's not a valid URL, don't render as a link
+        return actualText || '';
+      }
+      
+      // Render link with target="_blank" to open in new tab
+      return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${actualTitle || ''}">${actualText || ''}</a>`;
     }
   }
 });

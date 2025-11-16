@@ -11,8 +11,9 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 import time
 from services.document_loader import DocumentLoader
 from services.chunking_service import ChunkingService
-from services.embedding_service import EmbeddingService
+from utils.logger import setup_logger, log_success, log_error, log_warning, log_metric, log_pipeline_step
 
+logger = setup_logger(__name__)
 
 class IngestionPipeline:
     """Orchestrates the full RAG ingestion pipeline."""
@@ -39,7 +40,7 @@ class IngestionPipeline:
         os.makedirs(persist_directory, exist_ok=True)
         
         # Initialize embeddings
-        print(f"Initializing embeddings ({embedding_model})...")
+        logger.info(f"Initializing embeddings ({embedding_model})...")
         self.embeddings = HuggingFaceEmbeddings(
             model_name=embedding_model,
             model_kwargs={'device': 'cpu'},
@@ -53,7 +54,7 @@ class IngestionPipeline:
     def _initialize_vectorstore(self):
         """Initialize or load existing ChromaDB vector store."""
         try:
-            print(f"Initializing ChromaDB collection: {self.collection_name}...")
+            logger.info(f"Initializing ChromaDB collection: {self.collection_name}...")
             self.vectorstore = Chroma(
                 collection_name=self.collection_name,
                 embedding_function=self.embeddings,
@@ -62,10 +63,10 @@ class IngestionPipeline:
             
             # Get current count
             count = self.vectorstore._collection.count()
-            print(f"✓ ChromaDB initialized ({count} documents in collection)")
+            log_success(logger, f"ChromaDB initialized ({count} documents in collection)")
             
         except Exception as e:
-            print(f"✗ Error initializing ChromaDB: {e}")
+            log_error(logger, f"Error initializing ChromaDB: {e}")
             raise
     
     def get_status(self) -> Dict[str, Any]:
@@ -177,17 +178,17 @@ class IngestionPipeline:
         start_time = time.time()
         
         try:
-            print(f"\n{'='*60}")
-            print("Starting RAG Ingestion Pipeline")
-            print(f"{'='*60}\n")
+            logger.info(f"\n{'='*60}")
+            logger.info("Starting RAG Ingestion Pipeline")
+            logger.info(f"{'='*60}\n")
             
             # Step 0: Reset if requested
             if force_rebuild:
-                print("🔄 Force rebuild enabled - clearing existing collection...")
+                logger.info("🔄 Force rebuild enabled - clearing existing collection...")
                 self.reset_store()
             
             # Step 1: Load documents from CSVs
-            print(f"📂 Step 1: Loading documents from {data_dir}...")
+            log_pipeline_step(logger, 1, f"Loading documents from {data_dir}")
             loader = DocumentLoader(data_dir=data_dir)
             documents = loader.load_all_documents(
                 blog_files=blog_files,
@@ -202,17 +203,17 @@ class IngestionPipeline:
                     "message": f"No documents found in {data_dir}"
                 }
             
-            print(f"   ✓ Loaded {len(documents)} documents")
+            log_success(logger, f"Loaded {len(documents)} documents")
             
             # Step 2: Chunk documents
-            print(f"\n✂️  Step 2: Chunking documents...")
+            log_pipeline_step(logger, 2, "Chunking documents")
             chunker = ChunkingService()
             chunks = chunker.chunk_documents(documents)
-            print(f"   ✓ Created {len(chunks)} chunks")
+            log_success(logger, f"Created {len(chunks)} chunks")
             
             # Step 3: Embed chunks (handled by ChromaDB via add_documents)
-            print(f"\n🧮 Step 3: Embedding and storing in ChromaDB...")
-            print(f"   Processing {len(chunks)} chunks in batches of {batch_size}...")
+            log_pipeline_step(logger, 3, "Embedding and storing in ChromaDB")
+            logger.info(f"Processing {len(chunks)} chunks in batches of {batch_size}...")
             
             # Add documents to ChromaDB in batches
             total_added = 0
@@ -223,10 +224,10 @@ class IngestionPipeline:
                 self.vectorstore.add_documents(batch)
                 
                 total_added += len(batch)
-                print(f"   Progress: {total_added}/{len(chunks)} chunks stored")
+                logger.info(f"Progress: {total_added}/{len(chunks)} chunks stored")
             
             # Persist to disk
-            print(f"\n💾 Step 4: Persisting to disk...")
+            log_pipeline_step(logger, 4, "Persisting to disk")
             # Note: Chroma in newer versions auto-persists, but we'll be explicit
             # self.vectorstore.persist()  # Uncomment if using older Chroma version
             
@@ -237,15 +238,15 @@ class IngestionPipeline:
             # Get final collection stats
             final_count = self.vectorstore._collection.count()
             
-            print(f"\n{'='*60}")
-            print("✅ Pipeline Complete!")
-            print(f"{'='*60}")
-            print(f"Documents Loaded:  {len(documents)}")
-            print(f"Chunks Created:    {len(chunks)}")
-            print(f"Chunks Stored:     {total_added}")
-            print(f"Total in DB:       {final_count}")
-            print(f"Time Taken:        {time_taken:.2f} seconds")
-            print(f"{'='*60}\n")
+            logger.info(f"\n{'='*60}")
+            log_success(logger, "Pipeline Complete!")
+            logger.info(f"{'='*60}")
+            log_metric(logger, "Documents Loaded", len(documents))
+            log_metric(logger, "Chunks Created", len(chunks))
+            log_metric(logger, "Chunks Stored", total_added)
+            log_metric(logger, "Total in DB", final_count)
+            log_metric(logger, "Time Taken", f"{time_taken:.2f} seconds")
+            logger.info(f"{'='*60}\n")
             
             return {
                 "status_code": 200,
@@ -260,9 +261,9 @@ class IngestionPipeline:
             }
         
         except Exception as e:
-            print(f"\n❌ Pipeline failed: {e}")
+            log_error(logger, f"Pipeline failed: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             
             return {
                 "status_code": 500,
@@ -278,7 +279,7 @@ class IngestionPipeline:
         Useful for rebuilding the index from scratch.
         """
         try:
-            print(f"🗑️  Clearing collection: {self.collection_name}...")
+            logger.info(f"🗑️  Clearing collection: {self.collection_name}...")
             
             # Delete all documents
             import chromadb
@@ -286,16 +287,16 @@ class IngestionPipeline:
             
             try:
                 client.delete_collection(name=self.collection_name)
-                print(f"   ✓ Deleted collection")
+                log_success(logger, "Deleted collection")
             except:
-                print(f"   Collection doesn't exist yet (first run)")
+                logger.info("Collection doesn't exist yet (first run)")
             
             # Reinitialize
             self._initialize_vectorstore()
-            print(f"   ✓ Collection reset complete")
+            log_success(logger, "Collection reset complete")
             
         except Exception as e:
-            print(f"   ✗ Error resetting collection: {e}")
+            log_error(logger, f"Error resetting collection: {e}")
             raise
     
     def search(
@@ -332,9 +333,9 @@ class IngestionPipeline:
                     "message": "No documents in collection. Run pipeline first."
                 }
             
-            print(f"\n🔍 Searching for: '{query}'")
+            logger.info(f"\n🔍 Searching for: '{query}'")
             if filter_metadata:
-                print(f"   Filters: {filter_metadata}")
+                logger.info(f"Filters: {filter_metadata}")
             
             # Perform similarity search with scores
             if filter_metadata:
@@ -358,7 +359,7 @@ class IngestionPipeline:
                     "score": float(score)  # Convert to float for JSON serialization
                 })
             
-            print(f"   ✓ Found {len(formatted_results)} results\n")
+            log_success(logger, f"Found {len(formatted_results)} results\n")
             
             return {
                 "status_code": 200,
@@ -369,7 +370,7 @@ class IngestionPipeline:
             }
         
         except Exception as e:
-            print(f"   ✗ Search failed: {e}")
+            log_error(logger, f"Search failed: {e}")
             return {
                 "status_code": 500,
                 "status": "error",

@@ -7,7 +7,9 @@ Pure transformation service - no database handling.
 from typing import List, Dict, Any, Optional
 from langchain_core.documents import Document
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import numpy as np
+from utils.logger import setup_logger, log_success
+
+logger = setup_logger(__name__)
 
 
 class EmbeddingService:
@@ -31,13 +33,13 @@ class EmbeddingService:
         self.model_name = model_name
         self.device = device
         
-        print(f"Loading embedding model: {model_name}...")
+        logger.info(f"Loading embedding model: {model_name}...")
         self.embeddings = HuggingFaceEmbeddings(
             model_name=model_name,
             model_kwargs={'device': device},
             encode_kwargs={'normalize_embeddings': True}  # For cosine similarity
         )
-        print(f"✓ Embedding model loaded ({model_name})")
+        log_success(logger, f"Embedding model loaded ({model_name})")
     
     def embed_documents(self, documents: List[Document]) -> List[Dict[str, Any]]:
         """
@@ -55,7 +57,7 @@ class EmbeddingService:
         if not documents:
             return []
         
-        print(f"Embedding {len(documents)} documents...")
+        logger.info(f"Embedding {len(documents)} documents...")
         
         # Extract texts
         texts = [doc.page_content for doc in documents]
@@ -72,7 +74,7 @@ class EmbeddingService:
                 "embedding": embedding
             })
         
-        print(f"✓ Embedded {len(embedded_docs)} documents")
+        log_success(logger, f"Embedded {len(embedded_docs)} documents")
         return embedded_docs
     
     def embed_query(self, query: str) -> List[float]:
@@ -116,7 +118,7 @@ class EmbeddingService:
         if not documents:
             return []
         
-        print(f"Batch embedding {len(documents)} documents (batch_size={batch_size})...")
+        logger.info(f"Batch embedding {len(documents)} documents (batch_size={batch_size})...")
         
         all_embedded = []
         total = len(documents)
@@ -125,9 +127,9 @@ class EmbeddingService:
             batch = documents[i:i + batch_size]
             embedded_batch = self.embed_documents(batch)
             all_embedded.extend(embedded_batch)
-            print(f"  Progress: {min(i + batch_size, total)}/{total}")
+            logger.info(f"Progress: {min(i + batch_size, total)}/{total}")
         
-        print(f"✓ Batch embedding completed")
+        log_success(logger, "Batch embedding completed")
         return all_embedded
     
     def get_model_info(self) -> Dict[str, Any]:

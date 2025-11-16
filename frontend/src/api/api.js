@@ -22,9 +22,6 @@ export const getAIMessage = async (userQuery) => {
     // Start with the LLM's answer
     let content = data.answer;
     
-    // Remove any "(undefined)" text the LLM might have added
-    content = content.replace(/\(undefined\)/g, '');
-    
     // Always append properly formatted sources at the end
     if (data.sources && data.sources.length > 0) {
       content += "\n\n**Sources:**\n";
@@ -33,14 +30,35 @@ export const getAIMessage = async (userQuery) => {
           const partName = source.part_name || "Unknown Part";
           const partId = source.part_id || "N/A";
           const price = source.price || "Price N/A";
-          content += `\n${index + 1}. **${partName}** (${partId}) - ${price}`;
-        } else if (source.type === "blog" && source.url && source.title) {
-          // Only add blog sources if both URL and title exist
-          content += `\n${index + 1}. [${source.title}](${source.url})`;
+          let line = `\n${index + 1}. **${partName}** (${partId}) - ${price}`;
+          
+          // Add URLs if available - put each on its own line
+          if (source.product_url) {
+            line += `\n   - [View Part](${source.product_url})`;
+          }
+          if (source.install_video_url) {
+            line += `\n   - [Installation Video](${source.install_video_url})`;
+          }
+          
+          content += line;
+        } else if (source.type === "blog") {
+          if (source.url && source.title) {
+            content += `\n${index + 1}. [${source.title}](${source.url})`;
+          }
         } else if (source.type === "repair") {
           const symptom = source.symptom || "Repair Guide";
           const difficulty = source.difficulty || "N/A";
-          content += `\n${index + 1}. **${symptom}** (${difficulty})`;
+          let line = `\n${index + 1}. **${symptom}** (${difficulty})`;
+          
+          // Add URLs if available - put each on its own line for better markdown parsing
+          if (source.video_url) {
+            line += `\n   - [Watch Video](${source.video_url})`;
+          }
+          if (source.detail_url) {
+            line += `\n   - [More Info](${source.detail_url})`;
+          }
+          
+          content += line;
         }
       });
     }

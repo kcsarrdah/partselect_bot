@@ -8,9 +8,12 @@ import os
 from typing import Dict, Any, Optional, Tuple
 from openai import OpenAI
 from dotenv import load_dotenv
+from utils.logger import setup_logger, log_success, log_error
 
 # Load environment variables
 load_dotenv()
+
+logger = setup_logger(__name__)
 
 
 class LLMService:
@@ -51,12 +54,12 @@ class LLMService:
             raise ValueError(f"API key not found. Set {api_key_env} in .env file")
         
         # Initialize OpenAI client
-        print(f"Initializing LLM Service: {self.provider} ({self.model})")
+        logger.info(f"Initializing LLM Service: {self.provider} ({self.model})")
         self.client = OpenAI(
             base_url=base_url,
             api_key=self.api_key
         )
-        print(f"✓ LLM Service ready")
+        log_success(logger, "LLM Service ready")
     
     def _get_client_config(self) -> Tuple[str, str, str]:
         """
@@ -108,9 +111,9 @@ class LLMService:
             temp = temperature if temperature is not None else self.temperature
             tokens = max_tokens if max_tokens is not None else self.max_tokens
             
-            print(f"\n🤖 Generating response...")
-            print(f"   Model: {self.model}")
-            print(f"   Prompt length: {len(prompt)} chars")
+            logger.info(f"\n🤖 Generating response...")
+            logger.info(f"Model: {self.model}")
+            logger.info(f"Prompt length: {len(prompt)} chars")
             
             # Call LLM API
             response = self.client.chat.completions.create(
@@ -140,7 +143,7 @@ class LLMService:
             message = response.choices[0].message.content
             usage = response.usage
             
-            print(f"   ✓ Response generated ({usage.total_tokens} tokens)")
+            log_success(logger, f"Response generated ({usage.total_tokens} tokens)")
             
             return {
                 "status_code": 200,
@@ -174,7 +177,7 @@ class LLMService:
         error_type = type(error).__name__
         error_message = str(error)
         
-        print(f"   ✗ Error: {error_type} - {error_message}")
+        log_error(logger, f"Error: {error_type} - {error_message}")
         
         # Determine status code based on error type
         if "authentication" in error_message.lower() or "api key" in error_message.lower():
@@ -216,16 +219,16 @@ class LLMService:
         Returns:
             Response from test prompt
         """
-        print("\n🔍 Testing LLM connection...")
+        logger.info("\n🔍 Testing LLM connection...")
         result = self.generate(
             prompt="Reply with exactly: 'Connection successful!'",
             max_tokens=50
         )
         
         if result['status_code'] == 200:
-            print("✓ Connection test passed")
+            log_success(logger, "Connection test passed")
         else:
-            print("✗ Connection test failed")
+            log_error(logger, "Connection test failed")
         
         return result
 

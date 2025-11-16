@@ -32,11 +32,15 @@ class Source(BaseModel):
     part_name: Optional[str] = None
     brand: Optional[str] = None
     price: Optional[str] = None
+    product_url: Optional[str] = None 
+    install_video_url: Optional[str] = None  
     symptom: Optional[str] = None
     appliance: Optional[str] = None
     difficulty: Optional[str] = None
+    video_url: Optional[str] = None  
+    detail_url: Optional[str] = None 
     title: Optional[str] = None
-    url: Optional[str] = None
+    url: Optional[str] = None  
 
 
 class PopularQuery(BaseModel):

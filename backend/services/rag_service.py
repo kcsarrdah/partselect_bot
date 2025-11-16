@@ -256,13 +256,17 @@ class RAGService:
                     "part_id": metadata.get('part_id'),
                     "part_name": metadata.get('part_name'),
                     "brand": metadata.get('brand'),
-                    "price": metadata.get('price')
+                    "price": metadata.get('price'),
+                    "product_url": metadata.get('product_url'),
+                    "install_video_url": metadata.get('install_video_url')
                 })
             elif doc_type == 'repair':
                 source.update({
                     "symptom": metadata.get('symptom'),
                     "appliance": metadata.get('appliance'),
-                    "difficulty": metadata.get('difficulty')
+                    "difficulty": metadata.get('difficulty'),
+                    "video_url": metadata.get('video_url'),
+                    "detail_url": metadata.get('detail_url')
                 })
             elif doc_type == 'blog':
                 source.update({

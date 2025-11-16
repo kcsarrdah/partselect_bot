@@ -413,6 +413,44 @@ class QueryCache:
             "similarity_threshold": self.similarity_threshold
         }
     
+    def get_conversation_history(self, limit: int = 20) -> List[Dict[str, str]]:
+        """
+        Retrieve the last N query-response pairs for conversation context.
+        
+        Args:
+            limit: Number of recent interactions to retrieve (default 20)
+            
+        Returns:
+            List of dicts with 'query' and 'answer' keys, ordered from oldest to newest
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get the most recent interactions
+            cursor.execute(f"""
+                SELECT query_text, answer
+                FROM query_cache
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            # Return in chronological order (oldest to newest for better context)
+            history = [
+                {"query": row[0], "answer": row[1]}
+                for row in reversed(rows)
+            ]
+            
+            logger.info(f"📚 Retrieved {len(history)} conversation history items")
+            return history
+            
+        except Exception as e:
+            logger.error(f"Error retrieving conversation history: {e}")
+            return []
+
     def clear(self):
         """Clear all cached queries (useful for testing)."""
         conn = sqlite3.connect(self.db_path)

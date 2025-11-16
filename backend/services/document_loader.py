@@ -105,10 +105,14 @@ URL: {row['url']}"""
             with open(file_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 
+                skipped_count = 0
                 for idx, row in enumerate(reader):
                     # Skip rows with missing critical data
                     if not row.get('part_name'):
-                        log_warning(logger, f"Skipping part row {idx} - missing part_name")
+                        skipped_count += 1
+                        # Only log first few skipped rows, then summarize
+                        if skipped_count <= 3:
+                            logger.debug(f"Skipping part row {idx} - missing part_name")
                         continue
                     
                     # Create rich page content
@@ -149,6 +153,13 @@ Replaces parts: {row.get('replace_parts', 'N/A')}"""
                         page_content=page_content,
                         metadata=metadata
                     ))
+            
+            # Log summary of skipped rows
+            if skipped_count > 0:
+                if skipped_count <= 3:
+                    logger.info(f"Skipped {skipped_count} rows with missing part_name")
+                else:
+                    logger.warning(f"Skipped {skipped_count} rows with missing part_name (dataset issue)")
             
             log_success(logger, f"Loaded {len(documents)} {appliance_type} part documents")
             

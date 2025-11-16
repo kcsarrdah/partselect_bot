@@ -5,7 +5,16 @@ import { useState, useEffect } from "react";
 function App() {
   const defaultMessage = [{
     role: "assistant",
-    content: "Hi, how can I help you today?"
+    content: `👋 **Welcome to PartSelect Assistant!**
+
+I'm here to help you find the right parts for your **refrigerator** or **dishwasher**. I can help you with:
+
+🔧 **Finding parts** - Just ask about any part or provide a part number (like PS123456)
+💰 **Checking prices & availability** - Want to know if something's in stock?
+🛠️ **Troubleshooting** - Having issues? Describe the problem and I'll help diagnose it
+📹 **Installation help** - Need guidance on how to install a part? I've got you covered!
+
+What can I help you with today?`
   }];
 
   // Lift messages state to App level

@@ -21,7 +21,7 @@ class TestEmbeddingServiceInitialization:
     
     def test_get_model_info(self, service):
         """TEST: Model info returns correct details"""
-        info = service.get_model_info()
+    info = service.get_model_info()
         
         assert 'model_name' in info
         assert 'embedding_dimension' in info
@@ -38,7 +38,7 @@ class TestEmbeddingServiceQueryEmbedding:
     
     def test_embed_single_query(self, service):
         """TEST: Embed a single query string"""
-        query = "ice maker not working"
+    query = "ice maker not working"
         embedding = service.embed_query(query)
         
         assert embedding is not None
@@ -76,19 +76,19 @@ class TestEmbeddingServiceDocumentEmbedding:
     def sample_documents(self):
         """Create sample documents for testing"""
         return [
-            Document(
-                page_content="The ice maker assembly needs to be replaced.",
-                metadata={"type": "part", "doc_id": "test_1"}
-            ),
-            Document(
-                page_content="Dishwasher spray arm is not rotating properly.",
-                metadata={"type": "repair", "doc_id": "test_2"}
-            ),
-            Document(
-                page_content="How to install a new refrigerator water filter.",
-                metadata={"type": "blog", "doc_id": "test_3"}
-            )
-        ]
+        Document(
+            page_content="The ice maker assembly needs to be replaced.",
+            metadata={"type": "part", "doc_id": "test_1"}
+        ),
+        Document(
+            page_content="Dishwasher spray arm is not rotating properly.",
+            metadata={"type": "repair", "doc_id": "test_2"}
+        ),
+        Document(
+            page_content="How to install a new refrigerator water filter.",
+            metadata={"type": "blog", "doc_id": "test_3"}
+        )
+    ]
     
     def test_embed_multiple_documents(self, service, sample_documents):
         """TEST: Embed multiple documents at once"""

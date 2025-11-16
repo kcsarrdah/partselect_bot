@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
             log_success(logger, f"Vector store loaded: {status['total_documents']} documents")
         
         # Initialize LLM service
-        llm_service = LLMService(model="google/gemma-3-27b-it:free")
+        llm_service = LLMService()
         
         # Initialize RAG service
         rag_service = RAGService(

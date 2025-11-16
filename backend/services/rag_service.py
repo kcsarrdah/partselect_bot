@@ -57,7 +57,7 @@ class RAGService:
         system_prompt: str = PARTSELECT_SYSTEM_PROMPT,
         default_k: int = 5,
         enable_cache: bool = True,
-        enable_retrieval_logging: bool = True  # NEW
+        enable_retrieval_logging: bool = True
     ):
         """
         Initialize RAG service with dependencies.
@@ -84,7 +84,7 @@ class RAGService:
             self.cache = None
             log_warning(logger, "Query cache disabled")
         
-        # NEW: Retrieval quality logging
+        # Retrieval quality logging
         self.retrieval_logging_enabled = enable_retrieval_logging
         self.retrieval_logs = []  # Store logs in memory (move to DB in production)
         
@@ -117,9 +117,7 @@ class RAGService:
         """
         start_time = time.time()
         
-        # ✅ FIX: Check cache FIRST (before any processing)
         if self.cache_enabled:
-            logger.info("🔍 Checking cache...")
             cached = self.cache.get(user_query)
             if cached:
                 self.queries_processed += 1
@@ -128,20 +126,18 @@ class RAGService:
                 log_success(logger, f"Cache hit! (saved {tokens_saved} tokens)")
                 cached['metadata']['cache_response_time_seconds'] = round(response_time, 3)
                 
-                logger.info(f"\n{'='*60}")
-                log_success(logger, f"Query Complete from Cache ({response_time:.3f}s)")
-                logger.info(f"{'='*60}\n")
+                try:
+                    empty_context = []
+                    cached['answer'] = self._embed_source_links(cached['answer'], empty_context)
+                except Exception as e:
+                    logger.error(f"Error post-processing cached answer: {e}")
                 
+                log_success(logger, f"Query Complete from Cache ({response_time:.3f}s)")
                 return cached
-        
-        # ✅ CALL: Analyze query
         analysis = self._analyze_query(user_query)
         
-        # ✅ CALL: Check if retrieval is needed (NEW)
         if not self._should_retrieve(user_query, analysis):
-            logger.info("📝 Query can be answered without retrieval")
             result = self._answer_without_retrieval(user_query, analysis, start_time)
-            # ✅ FIX: Cache parametric-only responses too
             if self.cache_enabled:
                 self.cache.set(user_query, result)
             return result
@@ -153,7 +149,6 @@ class RAGService:
         )
         
         if use_self_consistency and is_critical_query:
-            logger.info("🔄 Critical query detected - using self-consistency")
             return self._query_with_self_consistency(user_query, k, filter_type, include_examples, analysis)
         
         # Smart k selection
@@ -166,13 +161,7 @@ class RAGService:
                 k = self.default_k
         
         try:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"RAG Query: {user_query}")
-            logger.info(f"{'='*60}")
-            
-            # Step 1: Retrieve context
             log_pipeline_step(logger, 1, "Retrieving context")
-            logger.info(f"🔍 Searching for: '{user_query}' (k={k})")
             context_docs = self._retrieve_context(user_query, k, filter_type)
             
             if not context_docs:
@@ -180,12 +169,22 @@ class RAGService:
             
             log_success(logger, f"Retrieved {len(context_docs)} documents")
             
-            # Step 2: Build prompt (now includes conflict detection)
+            if analysis.get('part_numbers') and not analysis.get('is_repair_query') and not analysis.get('is_installation_query'):
+                requested_parts = set(analysis['part_numbers'])
+                filtered_docs = []
+                for doc in context_docs:
+                    doc_metadata = doc.get('metadata', {})
+                    if doc_metadata.get('type') != 'part':
+                        filtered_docs.append(doc)
+                    elif doc_metadata.get('part_id') in requested_parts:
+                        filtered_docs.append(doc)
+                
+                if filtered_docs:
+                    context_docs = filtered_docs
+            
             log_pipeline_step(logger, 2, "Building prompt")
             prompt = self._build_prompt(user_query, context_docs, include_examples, analysis)
-            log_metric(logger, "Prompt size", f"{len(prompt)} chars")
             
-            # Step 3: Generate LLM response
             log_pipeline_step(logger, 3, "Generating response")
             llm_result = self.llm.generate(prompt)
             
@@ -194,11 +193,13 @@ class RAGService:
             
             log_success(logger, "Response generated")
             
-            # ✅ NEW: Post-process response to embed source links
             raw_answer = llm_result['response']
-            processed_answer = self._embed_source_links(raw_answer, context_docs)
+            sanitized_answer = self._sanitize_response(raw_answer)
+            processed_answer = self._embed_source_links(sanitized_answer, context_docs)
+            if not processed_answer or processed_answer.strip() == "":
+                logger.error("Processed answer is empty after all processing!")
+                processed_answer = raw_answer if raw_answer else "I couldn't generate a response. Please try again."
             
-            # Step 4: Extract sources
             log_pipeline_step(logger, 4, "Extracting sources")
             sources = self._extract_sources(context_docs)
             log_success(logger, f"Extracted {len(sources)} sources")
@@ -211,8 +212,8 @@ class RAGService:
                 "status_code": 200,
                 "status": "success",
                 "query": user_query,
-                "answer": processed_answer,  # Use processed answer with embedded links
-                "sources": sources,  # Keep sources for metadata, but frontend won't display them
+                "answer": processed_answer,
+                "sources": sources,
                 "metadata": {
                     "retrieved_docs": len(context_docs),
                     "tokens_used": llm_result['usage']['total_tokens'],
@@ -223,7 +224,6 @@ class RAGService:
                 }
             }
             
-            # ✅ CALL: Log retrieval quality (NEW)
             if self.retrieval_logging_enabled:
                 self._log_retrieval_quality(
                     query=user_query,
@@ -232,14 +232,10 @@ class RAGService:
                     analysis=analysis
                 )
             
-            # Cache the result
             if self.cache_enabled:
                 self.cache.set(user_query, result)
             
-            logger.info(f"\n{'='*60}")
             log_success(logger, f"Query Complete ({response_time:.2f}s, {llm_result['usage']['total_tokens']} tokens)")
-            logger.info(f"{'='*60}\n")
-            
             return result
         
         except Exception as e:
@@ -252,7 +248,42 @@ class RAGService:
                 "error_type": type(e).__name__
             }
     
-    # ✅ NEW METHOD: should_retrieve
+    
+    def _normalize_appliance_name(self, query: str) -> str:
+        """
+        Normalize common misspellings of appliance names.
+        
+        Args:
+            query: User query string
+        
+        Returns:
+            Normalized query string
+        """
+        query_lower = query.lower()
+        
+        # Common misspellings mapping
+        misspellings = {
+            'refridgerator': 'refrigerator',
+            'refridgerator': 'refrigerator',  # Common typo
+            'refrigirator': 'refrigerator',
+            'refrigrator': 'refrigerator',
+            'refridgerator': 'refrigerator',
+            'refrigerator': 'refrigerator',  # Correct spelling
+            'fridge': 'refrigerator',  # Alias
+            'freezer': 'freezer',
+            'dishwasher': 'dishwasher',
+            'dish washer': 'dishwasher',
+            'dish-washer': 'dishwasher',
+        }
+        
+        # Replace misspellings with correct spelling
+        normalized = query_lower
+        for misspelling, correct in misspellings.items():
+            normalized = normalized.replace(misspelling, correct)
+        
+        return normalized
+    
+    
     def _should_retrieve(self, query: str, query_analysis: Dict) -> bool:
         """
         Determine if retrieval is necessary.
@@ -278,15 +309,19 @@ class RAGService:
         general_keywords = ['how often', 'should i', 'is it normal', 'why', 'what is', 'tell me about']
         query_lower = query.lower()
         
+        
+        normalized_query = self._normalize_appliance_name(query)
+        
         if any(kw in query_lower for kw in general_keywords):
             # Check if it's appliance-specific (then retrieve)
             appliance_keywords = ['refrigerator', 'dishwasher', 'fridge', 'freezer']
-            if not any(app in query_lower for app in appliance_keywords):
+            
+            if not any(app in normalized_query for app in appliance_keywords):
                 return False
         
         return True  # Default: retrieve
     
-    # ✅ NEW METHOD: answer without retrieval
+    
     def _answer_without_retrieval(self, query: str, analysis: Dict[str, Any], start_time: float) -> Dict[str, Any]:
         """
         Answer general questions without retrieval using LLM's parametric knowledge.
@@ -299,8 +334,6 @@ class RAGService:
         Returns:
             Response dictionary
         """
-        logger.info("📝 Answering from parametric knowledge (no retrieval)")
-        
         simple_prompt = f"""{self.system_prompt.strip()}
 
 USER QUESTION: {query}
@@ -329,7 +362,7 @@ Please answer this general question to the best of your ability. If you need spe
             }
         }
     
-    # ✅ NEW METHOD: log_retrieval_quality
+    
     def _log_retrieval_quality(
         self,
         query: str,
@@ -377,9 +410,7 @@ Please answer this general question to the best of your ability. If you need spe
         self.retrieval_logs.append(quality_metrics)
         
         # Log to file/console for debugging
-        logger.debug(f"📊 Retrieval Quality: {quality_metrics}")
     
-    # ✅ NEW METHOD: check context usage
     def _check_context_usage(self, response: str, retrieved_docs: List[Dict]) -> str:
         """
         Check if retrieved context was actually used in the response.
@@ -424,23 +455,26 @@ Please answer this general question to the best of your ability. If you need spe
         """
         query_lower = query.lower()
         
+        
+        normalized_query = self._normalize_appliance_name(query)
+        
         # Extract part numbers
         part_numbers = re.findall(self.PART_NUMBER_PATTERN, query, re.IGNORECASE)
         
-        # Extract brand names
+        # Extract brand names (use original query for brand detection)
         detected_brands = []
         for brand in self.BRAND_KEYWORDS:
             if brand in query_lower:
                 detected_brands.append(brand.title())
         
-        # Check for repair intent
-        is_repair_query = any(keyword in query_lower for keyword in self.REPAIR_KEYWORDS)
+        # Check for repair intent (use normalized query)
+        is_repair_query = any(keyword in normalized_query for keyword in self.REPAIR_KEYWORDS)
         
-        # Check for stock intent
-        is_stock_query = any(keyword in query_lower for keyword in self.STOCK_KEYWORDS)
+        # Check for stock intent (use normalized query)
+        is_stock_query = any(keyword in normalized_query for keyword in self.STOCK_KEYWORDS)
         
-        # Check for installation intent
-        is_installation_query = any(keyword in query_lower for keyword in self.INSTALLATION_KEYWORDS)
+        # Check for installation intent (use normalized query)
+        is_installation_query = any(keyword in normalized_query for keyword in self.INSTALLATION_KEYWORDS)
         
         # Determine primary intent
         if part_numbers and is_installation_query:
@@ -484,15 +518,12 @@ Please answer this general question to the best of your ability. If you need spe
             query_complexity = self._assess_query_complexity(query, analysis)
             
             if query_complexity == 'simple':
-                logger.info("📊 Query complexity: SIMPLE - using direct retrieval")
                 return self._simple_retrieval(reformulated_query, k, filter_type, analysis)
             
             elif query_complexity == 'moderate':
-                logger.info("📊 Query complexity: MODERATE - using multi-step retrieval")
                 return self._moderate_retrieval(reformulated_query, k, filter_type, analysis)
             
             else:  # complex
-                logger.info("📊 Query complexity: COMPLEX - using iterative retrieval")
                 return self._complex_retrieval(reformulated_query, k, filter_type, analysis)
         
         except Exception as e:
@@ -537,8 +568,6 @@ Please answer this general question to the best of your ability. If you need spe
         # For simple part number lookups
         if analysis.get('part_numbers'):
             part_id = analysis['part_numbers'][0]
-            logger.info(f"🔍 Simple retrieval: Looking for exact part match {part_id}")
-            
             # Use part number directly, not reformulated query
             part_result = self.pipeline.search(
                 query=part_id,
@@ -555,10 +584,7 @@ Please answer this general question to the best of your ability. If you need spe
                 ]
                 
                 if exact_matches:
-                    logger.info(f"✓ Found {len(exact_matches)} exact part match(es)")
                     return exact_matches[:k]
-                else:
-                    logger.warning(f"⚠️  Part {part_id} not found in vector store")
         
         # Fallback: general search with reformulated query
         general_result = self.pipeline.search(query, k=k)
@@ -580,8 +606,6 @@ Please answer this general question to the best of your ability. If you need spe
         # Priority 1: If part number detected, search for exact match first
         if analysis.get('part_numbers'):
             part_id = analysis['part_numbers'][0]
-            logger.info(f"🔍 Priority search: Looking for exact part match {part_id}")
-            
             part_result = self.pipeline.search(
                 query=part_id,
                 k=5,
@@ -596,7 +620,6 @@ Please answer this general question to the best of your ability. If you need spe
                 ]
                 
                 if exact_matches:
-                    logger.info(f"✓ Found {len(exact_matches)} exact part match(es)")
                     results.extend(exact_matches[:1])
                     
                     # For installation queries, also get repair guides
@@ -612,15 +635,12 @@ Please answer this general question to the best of your ability. If you need spe
                     
                     if len(results) >= k:
                         return results[:k]
-                else:
-                    logger.warning(f"⚠️  Part {part_id} not found in vector store")
         
         # Priority 2: Intent-based search
         if not filter_type:
             if analysis.get('intent') == 'repair':
-                logger.info("🔍 Intent: Repair query - retrieving repair guides AND parts")
-                
-                repair_result = self.pipeline.search_by_type(query, doc_type='repair', k=k//2 + 1)
+                # Retrieve repair guides
+                repair_result = self.pipeline.search_by_type(query, doc_type='repair', k=k//3 + 1)
                 if repair_result['status_code'] == 200:
                     repair_results = repair_result.get('results', [])
                     existing_ids = {r.get('metadata', {}).get('doc_id') for r in results}
@@ -628,11 +648,20 @@ Please answer this general question to the best of your ability. If you need spe
                         if doc.get('metadata', {}).get('doc_id') not in existing_ids:
                             results.append(doc)
                 
+                
+                blog_result = self.pipeline.search_by_type(query, doc_type='blog', k=k//3 + 1)
+                if blog_result['status_code'] == 200:
+                    blog_results = blog_result.get('results', [])
+                    existing_ids = {r.get('metadata', {}).get('doc_id') for r in results}
+                    for doc in blog_results:
+                        if doc.get('metadata', {}).get('doc_id') not in existing_ids:
+                            results.append(doc)
+                # Retrieve parts
                 parts_query = query
                 if analysis.get('brands'):
                     parts_query = f"{query} {analysis['brands'][0]}"
                 
-                parts_result = self.pipeline.search_by_type(parts_query, doc_type='part', k=k//2 + 1)
+                parts_result = self.pipeline.search_by_type(parts_query, doc_type='part', k=k//3 + 1)
                 if parts_result['status_code'] == 200:
                     parts_results = parts_result.get('results', [])
                     if analysis.get('brands'):
@@ -645,7 +674,6 @@ Please answer this general question to the best of your ability. If you need spe
                             results.append(doc)
             
             elif analysis.get('intent') == 'stock':
-                logger.info("🔍 Intent: Stock query - prioritizing parts")
                 parts_result = self.pipeline.search_by_type(query, doc_type='part', k=k)
                 if parts_result['status_code'] == 200:
                     parts_results = parts_result.get('results', [])
@@ -659,7 +687,6 @@ Please answer this general question to the best of your ability. If you need spe
                             results.append(doc)
             
             elif analysis.get('intent') == 'installation':
-                logger.info("🔍 Intent: Installation query - prioritizing installation guides")
                 repair_result = self.pipeline.search_by_type(query, doc_type='repair', k=k//2 + 1)
                 if repair_result['status_code'] == 200:
                     repair_results = repair_result.get('results', [])
@@ -683,7 +710,6 @@ Please answer this general question to the best of your ability. If you need spe
         
         # Priority 3: General search
         if len(results) < k or filter_type:
-            logger.info(f"🔍 General search to fill remaining slots ({k - len(results)} needed)")
             if filter_type:
                 general_result = self.pipeline.search_by_type(query, doc_type=filter_type, k=k)
             else:
@@ -716,7 +742,6 @@ Please answer this general question to the best of your ability. If you need spe
         results.sort(key=sort_key)
         
         final_results = results[:k]
-        logger.info(f"✓ Returning {len(final_results)} prioritized results")
         return final_results
 
     def _complex_retrieval(
@@ -732,10 +757,19 @@ Please answer this general question to the best of your ability. If you need spe
         """
         results = []
         
+        
+        if analysis.get('intent') == 'repair' or analysis.get('is_repair_query'):
+            blog_result = self.pipeline.search_by_type(query, doc_type='blog', k=k//3 + 1)
+            if blog_result['status_code'] == 200:
+                blog_results = blog_result.get('results', [])
+                results.extend(blog_results)
         # Step 1: Initial broad retrieval
         initial_results = self.pipeline.search(query, k=k*2)
         if initial_results['status_code'] == 200:
-            results.extend(initial_results.get('results', []))
+            existing_ids = {r.get('metadata', {}).get('doc_id') for r in results}
+            for doc in initial_results.get('results', []):
+                if doc.get('metadata', {}).get('doc_id') not in existing_ids:
+                    results.append(doc)
         
         # Step 2: Analyze initial results to identify key concepts
         if results:
@@ -810,13 +844,17 @@ Please answer this general question to the best of your ability. If you need spe
         if analysis is None:
             analysis = self._analyze_query(user_query)
         
-        # ✅ This calls the UPDATED build_rag_prompt with all new features
+        
+        conversation_history = self.cache.get_conversation_history(limit=20) if self.cache_enabled else []
+        
+        
         return build_rag_prompt(
             user_query=user_query,
             context_docs=context_docs,
             system_prompt=self.system_prompt,
             include_examples=include_examples,
-            query_analysis=analysis
+            query_analysis=analysis,
+            conversation_history=conversation_history
         )
     
     def _extract_sources(self, context_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -907,7 +945,7 @@ Please answer this general question to the best of your ability. If you need spe
         if self.cache_enabled and self.cache:
             stats["cache_stats"] = self.cache.get_stats()
         
-        # ✅ ADD: Retrieval quality stats
+        
         if self.retrieval_logging_enabled and self.retrieval_logs:
             avg_relevance = sum(log['avg_relevance_score'] for log in self.retrieval_logs) / len(self.retrieval_logs)
             
@@ -972,11 +1010,6 @@ Please answer this general question to the best of your ability. If you need spe
         """Generate multiple responses and select the most consistent one."""
         start_time = time.time()
         
-        logger.info(f"\n{'='*60}")
-        logger.info(f"RAG Query (Self-Consistency): {user_query}")
-        logger.info(f"{'='*60}")
-        logger.info(f"🔄 Generating {num_samples} samples for consistency check")
-        
         if analysis is None:
             analysis = self._analyze_query(user_query)
         
@@ -1006,8 +1039,6 @@ Please answer this general question to the best of your ability. If you need spe
         
         for i in range(num_samples):
             temp = base_temperature - 0.2 + (i * 0.1)
-            logger.info(f"  📝 Sample {i+1}/{num_samples} (temperature={temp:.2f})")
-            
             llm_result = self.llm.generate(prompt, temperature=temp)
             
             if llm_result['status_code'] == 200:
@@ -1017,22 +1048,17 @@ Please answer this general question to the best of your ability. If you need spe
                     'temperature': temp,
                     'model': llm_result['model']
                 })
-                logger.info(f"    ✓ Sample {i+1} generated ({llm_result['usage']['total_tokens']} tokens)")
             else:
-                logger.warning(f"    ✗ Sample {i+1} failed: {llm_result.get('message', 'Unknown error')}")
+                logger.warning(f"Sample {i+1} failed: {llm_result.get('message', 'Unknown error')}")
         
         if not responses:
             log_error(logger, "All self-consistency samples failed")
             return self._handle_llm_error({'status_code': 500, 'message': 'All samples failed'})
         
-        logger.info(f"✓ Generated {len(responses)}/{num_samples} successful samples")
-        
         log_pipeline_step(logger, 4, "Selecting most consistent response")
         best_response = self._select_most_consistent_response(responses, user_query, analysis)
         
-        logger.info(f"✓ Selected most consistent response")
         
-        # ✅ NEW: Post-process response to embed source links
         raw_answer = best_response['answer']
         processed_answer = self._embed_source_links(raw_answer, context_docs)
         
@@ -1065,10 +1091,7 @@ Please answer this general question to the best of your ability. If you need spe
         if self.cache_enabled:
             self.cache.set(user_query, result)
         
-        logger.info(f"\n{'='*60}")
         log_success(logger, f"Query Complete (Self-Consistency: {response_time:.2f}s, {total_tokens} total tokens)")
-        logger.info(f"{'='*60}\n")
-        
         return result
 
     def _select_most_consistent_response(
@@ -1091,56 +1114,38 @@ Please answer this general question to the best of your ability. If you need spe
             if query_part_numbers:
                 if answer_part_numbers == query_part_numbers:
                     score += 10
-                    logger.info(f"  Sample {i+1}: Exact part number match (+10)")
                 elif answer_part_numbers.intersection(query_part_numbers):
                     score += 5
-                    logger.info(f"  Sample {i+1}: Partial part number match (+5)")
                 else:
                     score -= 5
-                    logger.info(f"  Sample {i+1}: Missing expected part numbers (-5)")
-            
             # Check for price mentions
             price_matches = re.findall(r'\$\d+\.?\d*', answer)
             if price_matches:
                 score += 3
-                logger.info(f"  Sample {i+1}: Contains price information (+3)")
-            
             # Check for availability mentions
             if re.search(r'\b(in stock|available|out of stock|currently available)\b', answer, re.IGNORECASE):
                 score += 2
-                logger.info(f"  Sample {i+1}: Contains availability information (+2)")
-            
             # Check for installation video links
             if analysis.get('intent') == 'installation':
                 if re.search(r'(install|installation).*video|video.*install', answer, re.IGNORECASE):
                     score += 3
-                    logger.info(f"  Sample {i+1}: Mentions installation video (+3)")
-            
             # Prefer concise responses
             word_count = len(answer.split())
             if 50 <= word_count <= 100:
                 score += 2
-                logger.info(f"  Sample {i+1}: Optimal length ({word_count} words, +2)")
             elif word_count > 150:
                 score -= 1
-                logger.info(f"  Sample {i+1}: Too verbose ({word_count} words, -1)")
             elif word_count < 30:
                 score -= 2
-                logger.info(f"  Sample {i+1}: Too short ({word_count} words, -2)")
-            
             # Check for proper formatting
             bold_count = answer.count('**')
             if bold_count >= 2:
                 score += 1
-                logger.info(f"  Sample {i+1}: Proper formatting with bold text (+1)")
-            
             # Prefer responses that don't mention unrelated parts
             if query_part_numbers:
                 unrelated_parts = answer_part_numbers - query_part_numbers
                 if unrelated_parts:
                     score -= len(unrelated_parts) * 2
-                    logger.info(f"  Sample {i+1}: Mentions {len(unrelated_parts)} unrelated parts (-{len(unrelated_parts) * 2})")
-            
             # Check consistency with other responses
             consistency_score = 0
             for other_resp in responses:
@@ -1155,22 +1160,163 @@ Please answer this general question to the best of your ability. If you need spe
             
             if consistency_score > 0:
                 score += min(consistency_score, 5)
-                logger.info(f"  Sample {i+1}: Consistent with other responses (+{min(consistency_score, 5)})")
-            
             scored_responses.append((score, resp, i+1))
         
         scored_responses.sort(key=lambda x: x[0], reverse=True)
         
         best_score, best_resp, best_index = scored_responses[0]
-        logger.info(f"\n📊 Consistency Scores:")
         for score, resp, idx in scored_responses:
             marker = "✓" if idx == best_index else " "
-            logger.info(f"  {marker} Sample {idx}: {score} points")
-        
-        logger.info(f"✓ Selected Sample {best_index} with score {best_score}")
-        
         return best_resp
 
+    def _sanitize_response(self, response_text: str) -> str:
+        """
+        Sanitize LLM response to remove duplicates, redundant information, and verbatim chunks.
+        
+        Args:
+            response_text: Raw LLM response
+            
+        Returns:
+            Sanitized response text
+        """
+        import re
+        
+        # Step 1: Remove duplicate part numbers in the same sentence/paragraph
+        # Pattern: (PS123456) appearing multiple times in close proximity
+        part_pattern = self.PART_NUMBER_PATTERN
+        parts_found = set()
+        
+        def deduplicate_parts(match):
+            part_id = match.group(0)
+            if part_id in parts_found:
+                return ""  # Remove duplicate
+            parts_found.add(part_id)
+            return part_id
+        
+        # First pass: remove duplicate part numbers in parentheses
+        response_text = re.sub(r'\(' + part_pattern + r'\)', deduplicate_parts, response_text)
+        
+        # Step 2: Remove duplicate blog title citations (e.g., [Title] appearing multiple times)
+        
+        blog_title_citations_found = set()
+        blog_citation_pattern = r'\[([A-Za-z0-9][^\]]{8,})\]'  # Matches [Title] with at least 8 chars (same as conversion)
+        
+        def deduplicate_blog_citation(match):
+            citation_text = match.group(0)  # Full match including brackets
+            citation_lower = citation_text.lower()
+            if citation_lower in blog_title_citations_found:
+                return ""  # Remove duplicate
+            blog_title_citations_found.add(citation_lower)
+            return citation_text
+        
+        response_text = re.sub(blog_citation_pattern, deduplicate_blog_citation, response_text)
+        
+        
+        youtube_pattern = r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)'
+        response_text = re.sub(youtube_pattern, '', response_text, flags=re.IGNORECASE)
+        
+        
+        redundant_patterns = [
+            r'You can find an installation video here:\s*\([^\)]+\)\s*Video\.?',
+            r'Installation video:\s*\([^\)]+\)\s*Video\.?',
+            r'Video guide:\s*\([^\)]+\)\s*Video\.?',
+            r'Watch the video:\s*\([^\)]+\)\s*Video\.?',
+            r'follow this video guide[:\s]*\([^\)]*\)',
+            r'you can follow this video guide[:\s]*\([^\)]*\)',
+            r'installation video[:\s]*\([^\)]*\)',
+        ]
+        for pattern in redundant_patterns:
+            response_text = re.sub(pattern, '', response_text, flags=re.IGNORECASE)
+        
+        # Step 5: Remove duplicate sentences (if same sentence appears twice)
+        sentences = response_text.split('.')
+        seen_sentences = set()
+        unique_sentences = []
+        for sentence in sentences:
+            sentence_clean = sentence.strip().lower()
+            # Skip if sentence is too short or already seen
+            if len(sentence_clean) < 20:
+                unique_sentences.append(sentence)
+                continue
+            if sentence_clean not in seen_sentences:
+                seen_sentences.add(sentence_clean)
+                unique_sentences.append(sentence)
+        
+        response_text = '. '.join(unique_sentences).replace('..', '.')
+        
+        # Step 6: Fix URLs that have spaces in them (remove spaces from URLs)
+        # Pattern: https:// or http:// followed by URL with potential spaces
+        # This pattern catches URLs even if they have spaces in the middle
+        url_pattern = r'(https?://[^\s\)\]\>]+(?:\s+[^\s\)\]\>]+)*)'
+        def fix_url_spaces(match):
+            url = match.group(1)
+            # Remove spaces from URL
+            fixed_url = re.sub(r'\s+', '', url)
+            return fixed_url
+        
+        response_text = re.sub(url_pattern, fix_url_spaces, response_text)
+        
+        # Step 7: Clean up extra whitespace (but preserve URLs)
+        # First, temporarily replace URLs with placeholders
+        url_placeholders = {}
+        placeholder_counter = 0
+        
+        def replace_url_with_placeholder(match):
+            nonlocal placeholder_counter
+            url = match.group(0)
+            placeholder = f"__URL_PLACEHOLDER_{placeholder_counter}__"
+            url_placeholders[placeholder] = url
+            placeholder_counter += 1
+            return placeholder
+        
+        # Replace URLs with placeholders
+        url_pattern_for_placeholder = r'https?://[^\s\)]+'
+        response_text = re.sub(url_pattern_for_placeholder, replace_url_with_placeholder, response_text)
+        
+        # Now clean up whitespace
+        response_text = re.sub(r'\s+', ' ', response_text)
+        response_text = re.sub(r'\s+\.', '.', response_text)
+        response_text = response_text.strip()
+        
+        # Restore URLs
+        for placeholder, url in url_placeholders.items():
+            response_text = response_text.replace(placeholder, url)
+        
+        return response_text
+
+    def _titles_match_fuzzy(self, title1: str, title2: str) -> bool:
+        """
+        Check if two blog titles match using fuzzy logic.
+        
+        Args:
+            title1: First title
+            title2: Second title
+            
+        Returns:
+            True if titles match (fuzzy), False otherwise
+        """
+        import re
+        # Normalize both titles
+        norm1 = re.sub(r'[^\w\s]', '', title1.lower())
+        norm2 = re.sub(r'[^\w\s]', '', title2.lower())
+        
+        # Check word overlap
+        words1 = set(norm1.split())
+        words2 = set(norm2.split())
+        
+        # Remove common stop words for better matching
+        stop_words = {'a', 'an', 'the', 'to', 'from', 'of', 'in', 'on', 'at', 'for', 'with', 'is', 'are', 'was', 'were'}
+        words1 = words1 - stop_words
+        words2 = words2 - stop_words
+        
+        if len(words1) >= 2 and len(words2) >= 2:  # Reduced minimum from 3 to 2
+            common_words = words1.intersection(words2)
+            min_words = min(len(words1), len(words2))
+            
+            return len(common_words) >= max(2, int(min_words * 0.5))
+        
+        return False
+    
     def _embed_source_links(
         self,
         response_text: str,
@@ -1182,10 +1328,21 @@ Please answer this general question to the best of your ability. If you need spe
         """
         import re
         
+        # Step 0: Fix any URLs that have spaces in them (shouldn't happen, but safety check)
+        url_pattern = r'(https?://[^\s\)\]\>]+(?:\s+[^\s\)\]\>]+)*)'
+        def fix_url_spaces(match):
+            url = match.group(1)
+            fixed_url = re.sub(r'\s+', '', url)
+            return fixed_url
+        response_text = re.sub(url_pattern, fix_url_spaces, response_text)
+        
         # Build source mapping: {1: {...urls..., 'type': 'part'}, 2: {...urls..., 'type': 'repair'}, ...}
         source_map = {}
         # Also build part_id -> source mapping for standalone replacement
         part_id_to_source = {}
+        
+        
+        all_context_urls = set()
         
         for idx, doc in enumerate(context_docs, start=1):
             metadata = doc.get('metadata', {})
@@ -1196,8 +1353,8 @@ Please answer this general question to the best of your ability. If you need spe
             if doc_type == 'part':
                 if metadata.get('product_url') and metadata.get('product_url') != 'N/A':
                     urls['product'] = metadata['product_url']
-                if metadata.get('install_video_url') and metadata.get('install_video_url') != 'N/A':
-                    urls['video'] = metadata['install_video_url']
+                    all_context_urls.add(metadata['product_url'])
+                
                 part_name = metadata.get('part_name', 'Part')
                 part_id = metadata.get('part_id', '')
                 price = metadata.get('price', '')
@@ -1212,16 +1369,17 @@ Please answer this general question to the best of your ability. If you need spe
                     part_id_to_source[part_id] = idx
                 
             elif doc_type == 'repair':
-                if metadata.get('video_url') and metadata.get('video_url') != 'N/A':
-                    urls['video'] = metadata['video_url']
+                
                 if metadata.get('detail_url') and metadata.get('detail_url') != 'N/A':
                     urls['detail'] = metadata['detail_url']
+                    all_context_urls.add(metadata['detail_url'])
                 symptom = metadata.get('symptom', 'Repair Guide')
                 urls['name'] = symptom
                 
             elif doc_type == 'blog':
                 if metadata.get('url') and metadata.get('url') != 'N/A':
                     urls['article'] = metadata['url']
+                    all_context_urls.add(metadata['url'])
                 title = metadata.get('title', 'Article')
                 urls['name'] = title
             
@@ -1255,19 +1413,17 @@ Please answer this general question to the best of your ability. If you need spe
                 elif availability and availability != 'N/A':
                     result += f"\n**{availability}**"
                 
-                # Add links
+                # Add links (only PartSelect links, no YouTube videos)
                 if 'product' in urls:
                     result += f" [View Part]({urls['product']})"
-                if 'video' in urls:
-                    result += f" [Installation Video]({urls['video']})"
+                
                 
                 return result
             
             elif doc_type == 'repair':
                 source_name = urls.get('name', 'Repair Guide')
                 result = f"[{source_name}]({urls['detail']})" if 'detail' in urls else source_name
-                if 'video' in urls:
-                    result += f" [Watch Video]({urls['video']})"
+                
                 return result
             
             elif doc_type == 'blog':
@@ -1279,6 +1435,483 @@ Please answer this general question to the best of your ability. If you need spe
             return match.group(0)
         
         processed_text = re.sub(citation_pattern, replace_citation, response_text)
+        
+        
+        # Pattern: [Article Title] that matches blog titles from context
+        # Build a map of blog titles to URLs (with fuzzy matching support)
+        blog_title_map = {}  # Exact match (normalized)
+        blog_title_normalized = {}  # Normalized (no punctuation, lowercase)
+        
+        # First, collect blogs from context_docs
+        for idx, doc in enumerate(context_docs, start=1):
+            metadata = doc.get('metadata', {})
+            doc_type = metadata.get('type', 'unknown')
+            if doc_type == 'blog':
+                title = metadata.get('title', '')
+                url = metadata.get('url', '')
+                # Check if URL is valid (not empty, not 'N/A', not None)
+                if title and url and url not in ['N/A', '', None]:
+                    # Exact match (lowercase)
+                    blog_title_map[title.lower()] = {'title': title, 'url': url}
+                    # Normalized match (remove punctuation, lowercase)
+                    normalized = re.sub(r'[^\w\s]', '', title.lower())
+                    blog_title_normalized[normalized] = {'title': title, 'url': url}
+        
+        # This ensures we're looking at the same text that will be converted
+        
+        blog_title_pattern_temp = r'\[(["\']?)([A-Za-z0-9][^\]]{3,})\1\]'
+        potential_titles_matches = re.findall(blog_title_pattern_temp, processed_text)
+        potential_titles = [title.strip('"\'') for quote, title in potential_titles_matches if title]
+        
+        # Query ChromaDB directly using where filter
+        all_blogs_from_store = {}
+        try:
+            # Access ChromaDB collection directly and query all blogs
+            collection = self.pipeline.vectorstore._collection
+            
+            # SQL-like query: SELECT * FROM collection WHERE type = 'blog'
+            blog_results = collection.get(
+                where={"type": "blog"},
+                limit=1000  # Get all blogs
+            )
+            
+            if blog_results and 'metadatas' in blog_results and blog_results['metadatas']:
+                for i, metadata in enumerate(blog_results['metadatas']):
+                    if metadata:
+                        blog_title = metadata.get('title', '')
+                        blog_url = metadata.get('url', '')
+                        if blog_title and blog_url and blog_url not in ['N/A', '', None]:
+                            blog_title_lower = blog_title.lower()
+                            blog_normalized = re.sub(r'[^\w\s]', '', blog_title_lower)
+                            all_blogs_from_store[blog_title_lower] = {'title': blog_title, 'url': blog_url}
+                            all_blogs_from_store[blog_normalized] = {'title': blog_title, 'url': blog_url}
+                            # Also add to the main maps for direct lookup
+                            blog_title_map[blog_title_lower] = {'title': blog_title, 'url': blog_url}
+                            blog_title_normalized[blog_normalized] = {'title': blog_title, 'url': blog_url}
+            else:
+                logger.warning("No blogs found in ChromaDB - blog title conversion may fail")
+        except Exception as e:
+            logger.error(f"Error loading all blogs from ChromaDB: {e}", exc_info=True)
+            logger.error("   Blog title conversion may fail due to this error.")
+        
+        # For each potential title, check if we already have it, if not search vector store
+        for title_text in potential_titles:
+            title_lower = title_text.lower()
+            normalized_title = re.sub(r'[^\w\s]', '', title_lower)
+            
+            # Skip if we already have this title
+            if title_lower in blog_title_map or normalized_title in blog_title_normalized:
+                continue
+            
+            
+            if title_lower in all_blogs_from_store:
+                blog_info = all_blogs_from_store[title_lower]
+                blog_title_map[title_lower] = blog_info
+                blog_normalized = re.sub(r'[^\w\s]', '', title_lower)
+                blog_title_normalized[blog_normalized] = blog_info
+                continue
+            
+            if normalized_title in all_blogs_from_store:
+                blog_info = all_blogs_from_store[normalized_title]
+                blog_title_map[title_lower] = blog_info
+                blog_title_normalized[normalized_title] = blog_info
+                continue
+            
+            
+            found_match = False
+            # Get unique blog entries (avoid duplicates from normalized keys)
+            unique_blogs = {}
+            for key, blog_info in all_blogs_from_store.items():
+                # Use title as the unique key
+                unique_blogs[blog_info['title'].lower()] = blog_info
+            
+            for blog_title_key, blog_info in unique_blogs.items():
+                if self._titles_match_fuzzy(title_text, blog_info['title']):
+                    blog_title_map[title_lower] = blog_info
+                    blog_title_normalized[normalized_title] = blog_info
+                    found_match = True
+                    break
+            
+            if found_match:
+                continue
+            
+            
+            try:
+                # Try semantic search first
+                blog_result = self.pipeline.search(
+                    query=title_text,
+                    k=10,  # Increased to get more results
+                    filter_metadata={"type": "blog"}
+                )
+                if blog_result.get('status_code') == 200:
+                    blog_docs = blog_result.get('results', [])
+                    for blog_doc in blog_docs:
+                        blog_metadata = blog_doc.get('metadata', {})
+                        blog_title = blog_metadata.get('title', '')
+                        blog_url = blog_metadata.get('url', '')
+                        if blog_title and blog_url and blog_url not in ['N/A', '', None]:
+                            # Check if this blog matches the title we're looking for
+                            blog_title_lower = blog_title.lower()
+                            blog_normalized = re.sub(r'[^\w\s]', '', blog_title_lower)
+                            
+                            # Check for match (exact or normalized or fuzzy)
+                            if (title_lower == blog_title_lower or 
+                                normalized_title == blog_normalized or
+                                self._titles_match_fuzzy(title_text, blog_title)):
+                                blog_title_map[blog_title_lower] = {'title': blog_title, 'url': blog_url}
+                                blog_title_normalized[blog_normalized] = {'title': blog_title, 'url': blog_url}
+                                found_match = True
+                                break  # Use first match
+                
+                else:
+                    logger.warning(f"  Vector store search failed with status {blog_result.get('status_code')}")
+            except Exception as e:
+                logger.error(f"Error searching for blog '{title_text}': {e}")
+        
+        # Pattern: [Title] that matches a blog title
+        def convert_blog_title_citation(match):
+            # New pattern: group 1 = quote (optional), group 2 = title
+            # Old pattern: group 1 = title
+            if len(match.groups()) >= 2:
+                # New pattern with quote group
+                title_in_brackets = match.group(2).strip().strip('"\'')
+            else:
+                # Old pattern or MatchWrapper
+                title_in_brackets = match.group(1).strip().strip('"\'')
+            title_lower = title_in_brackets.lower()
+            normalized_response = re.sub(r'[^\w\s]', '', title_lower)
+            
+            if len(blog_title_map) == 0 and len(blog_title_normalized) == 0:
+                logger.warning(f"Blog title maps are empty! Cannot convert '{title_in_brackets}'")
+                return match.group(0)
+            
+            if title_lower in blog_title_map:
+                blog_info = blog_title_map[title_lower]
+                return f"[{blog_info['title']}]({blog_info['url']})"
+            
+            
+            # Check if title_in_brackets is contained in any blog title or vice versa
+            best_substring_match = None
+            best_overlap = 0
+            
+            # For very short titles (<= 5 chars), use keyword matching instead of overlap
+            if len(title_lower) <= 5:
+                # Check if the short title appears as a word in any blog title
+                # Normalize words by removing punctuation for comparison
+                title_normalized = re.sub(r'[^\w]', '', title_lower)
+                for blog_title_lower, blog_info in blog_title_map.items():
+                    blog_words_raw = blog_title_lower.split()
+                    blog_words_normalized = {re.sub(r'[^\w]', '', word.lower()) for word in blog_words_raw}
+                    if title_normalized in blog_words_normalized:
+                        # Found as a complete word - this is a strong match
+                        return f"[{blog_info['title']}]({blog_info['url']})"
+            
+            # For longer titles, use overlap-based matching
+            for blog_title_lower, blog_info in blog_title_map.items():
+                if title_lower in blog_title_lower:
+                    overlap = len(title_lower) / len(blog_title_lower)
+                    threshold = 0.3 if len(title_lower) <= 6 else 0.6
+                    if overlap >= threshold and overlap > best_overlap:
+                        best_overlap = overlap
+                        best_substring_match = blog_info
+                elif blog_title_lower in title_lower:
+                    overlap = len(blog_title_lower) / len(title_lower)
+                    threshold = 0.3 if len(title_lower) <= 6 else 0.6
+                    if overlap >= threshold and overlap > best_overlap:
+                        best_overlap = overlap
+                        best_substring_match = blog_info
+            
+            if best_substring_match:
+                return f"[{best_substring_match['title']}]({best_substring_match['url']})"
+            
+            # Try normalized match (remove punctuation)
+            if normalized_response in blog_title_normalized:
+                blog_info = blog_title_normalized[normalized_response]
+                return f"[{blog_info['title']}]({blog_info['url']})"
+            
+            
+            best_norm_substring_match = None
+            best_norm_overlap = 0
+            for norm_title, blog_info in blog_title_normalized.items():
+                # Calculate overlap ratio
+                if normalized_response in norm_title:
+                    overlap = len(normalized_response) / len(norm_title)
+                elif norm_title in normalized_response:
+                    overlap = len(norm_title) / len(normalized_response)
+                else:
+                    continue
+                
+                threshold = 0.3 if len(normalized_response) <= 6 else 0.6
+                if overlap >= threshold and overlap > best_norm_overlap:
+                    best_norm_overlap = overlap
+                    best_norm_substring_match = blog_info
+            
+            if best_norm_substring_match:
+                return f"[{best_norm_substring_match['title']}]({best_norm_substring_match['url']})"
+            
+            # Try fuzzy match: check if response title matches any blog title
+            best_match = None
+            best_score = 0
+            for normalized_title, blog_info in blog_title_normalized.items():
+                if self._titles_match_fuzzy(title_in_brackets, blog_info['title']):
+                    # Calculate match score (number of common words)
+                    response_words = set(normalized_response.split())
+                    title_words = set(normalized_title.split())
+                    common_words = response_words.intersection(title_words)
+                    score = len(common_words)
+                    if score > best_score:
+                        best_score = score
+                        best_match = blog_info
+            
+            if best_match:
+                return f"[{best_match['title']}]({best_match['url']})"
+            
+            
+            # Check if the response title contains key words from any blog title
+            response_words = set(normalized_response.split())
+            if len(response_words) >= 3:  # Only try if we have enough words
+                for normalized_title, blog_info in blog_title_normalized.items():
+                    blog_words = set(normalized_title.split())
+                    # Check if at least 3 key words match (more lenient than fuzzy)
+                    common_keywords = response_words.intersection(blog_words)
+                    # Focus on important words (exclude common words like "to", "a", "the", "from", "the")
+                    important_words = {'how', 'fix', 'repair', 'dishwasher', 'refrigerator', 'leaking', 'leak', 
+                                     'not', 'working', 'broken', 'ice', 'maker', 'water', 'filter', 'door', 'seal',
+                                     'troubleshooting', 'troubleshoot', 'guide', 'diagnose', 'problem', 'issue'}
+                    important_matches = [w for w in common_keywords if w in important_words]
+                    
+                    if len(common_keywords) >= 3 or len(important_matches) >= 2:
+                        return f"[{blog_info['title']}]({blog_info['url']})"
+            
+            # No match found - try one more time with direct SQL query from vector store as absolute fallback
+            
+            try:
+                # Access ChromaDB collection directly
+                collection = self.pipeline.vectorstore._collection
+                
+                # Query all blogs using where filter (SQL-like)
+                blog_results = collection.get(
+                    where={"type": "blog"},
+                    limit=1000  # Get all blogs
+                )
+                
+                if blog_results and 'metadatas' in blog_results and blog_results['metadatas']:
+                    
+                    best_match = None
+                    best_score = 0
+                    
+                    for i, metadata in enumerate(blog_results['metadatas']):
+                        if metadata:
+                            db_title = metadata.get('title', '')
+                            db_url = metadata.get('url', '')
+                            if db_title and db_url and db_url not in ['N/A', '', None]:
+                                db_title_lower = db_title.lower()
+                                db_normalized = re.sub(r'[^\w\s]', '', db_title_lower)
+                                
+                                # Calculate match score
+                                score = 0
+                                
+                                # Exact match (highest score)
+                                if title_lower == db_title_lower:
+                                    score = 100
+                                # Normalized match
+                                elif normalized_response == db_normalized:
+                                    score = 90
+                                # Fuzzy match
+                                elif self._titles_match_fuzzy(title_in_brackets, db_title):
+                                    # Calculate word overlap score
+                                    response_words = set(normalized_response.split())
+                                    db_words = set(db_normalized.split())
+                                    common_words = response_words.intersection(db_words)
+                                    score = len(common_words) * 10  # 10 points per common word
+                                # Partial match (check if key words match)
+                                else:
+                                    response_words = set(normalized_response.split())
+                                    db_words = set(db_normalized.split())
+                                    common_words = response_words.intersection(db_words)
+                                    important_words = {'how', 'fix', 'repair', 'dishwasher', 'refrigerator', 'leaking', 'leak', 
+                                                     'not', 'working', 'broken', 'ice', 'maker', 'water', 'filter', 'door', 'seal', 
+                                                     'ge', 'troubleshooting', 'troubleshoot', 'guide', 'diagnose', 'problem', 'issue'}
+                                    important_matches = [w for w in common_words if w in important_words]
+                                    if len(common_words) >= 3 or len(important_matches) >= 2:
+                                        score = len(common_words) * 5 + len(important_matches) * 10
+                                
+                                if score > best_score:
+                                    best_score = score
+                                    best_match = {'title': db_title, 'url': db_url}
+                    
+                    if best_match and best_score > 0:
+                        blog_info = best_match
+                        blog_title_map[title_lower] = blog_info
+                        blog_title_normalized[normalized_response] = blog_info
+                        return f"[{blog_info['title']}]({blog_info['url']})"
+            except Exception as e:
+                logger.error(f"Error in SQL query fallback: {e}")
+            
+            # Extract key words from the title
+            response_words = set(normalized_response.split())
+            important_keywords = {'how', 'fix', 'repair', 'dishwasher', 'refrigerator', 'leaking', 'leak', 
+                                 'not', 'working', 'broken', 'ice', 'maker', 'water', 'filter', 'door', 'seal', 
+                                 'ge', 'bottom', 'from', 'top', 'side', 'troubleshooting', 'troubleshoot', 'guide',
+                                 'diagnose', 'diagnosis', 'problem', 'issue', 'solution', 'help'}
+            title_keywords = [w for w in response_words if w in important_keywords]
+            
+            if title_keywords and blog_title_normalized:
+                best_keyword_match = None
+                best_keyword_score = 0
+                
+                for norm_title, blog_info in blog_title_normalized.items():
+                    blog_words = set(norm_title.split())
+                    matching_keywords = [kw for kw in title_keywords if kw in blog_words]
+                    score = len(matching_keywords)
+                    
+                    
+                    # If we have keywords like "troubleshooting" + "dishwasher" + "leak", even 1-2 matches should work
+                    if score >= 1 and score > best_keyword_score:  # At least 1 keyword must match (very lenient)
+                        best_keyword_score = score
+                        best_keyword_match = blog_info
+                
+                if best_keyword_match:
+                    return f"[{best_keyword_match['title']}]({best_keyword_match['url']})"
+            
+            # Log available titles for debugging
+            if blog_title_normalized:
+                # Show similar titles
+                response_words = set(normalized_response.split())
+                for norm_title, blog_info in list(blog_title_normalized.items())[:5]:
+                    title_words = set(norm_title.split())
+                    common = response_words.intersection(title_words)
+                    if len(common) > 0:
+                        pass
+            
+            if not blog_title_map:
+                logger.error("Blog title maps are empty! Vector store may not have blogs loaded.")
+            
+            return match.group(0)
+        
+        # Match [Title] patterns that could be blog citations
+        # Pattern matches [Title] with capital/lowercase letter or number and at least 4 chars
+        # BUT exclude very common/generic patterns like [View Part], [Source N], [Link]
+        
+        blog_title_pattern = r'\*?\*?\[(["\']?)([A-Za-z0-9][^\]]{3,})\1\]\*?\*?'  # Handles [Title], ["Title"], or **[Title]**
+        
+        # Pattern to identify non-blog patterns that we should skip
+        skip_patterns = {'view part', 'source', 'link', 'more', 'click', 'read', 'see', 'open'}
+        
+        # Count matches before conversion
+        matches_before = len(re.findall(blog_title_pattern, processed_text))
+        
+        if matches_before > 0:
+            found_titles = re.findall(blog_title_pattern, processed_text)
+        # Track if any conversions happened
+        conversion_count = [0]  # Use list to modify in nested function
+        
+        def convert_and_count(match):
+            original_match = match.group(0)
+            # New pattern: group 1 = quote, group 2 = title
+            if len(match.groups()) >= 2:
+                quote_char = match.group(1) or ''
+                title_text = match.group(2).strip().strip('"\'')
+            else:
+                quote_char = ''
+                title_text = match.group(1).strip().strip('"\'')
+            title_lower = title_text.lower()
+            
+            # Skip generic/placeholder patterns
+            if title_lower in skip_patterns:
+                return original_match
+            
+            # Create a new match object with cleaned title for conversion
+            class MatchWrapper:
+                def __init__(self, text, quote=''):
+                    self.text = text
+                    self.quote = quote
+                def group(self, n):
+                    if n == 0:
+                        return f'[{self.quote}{self.text}{self.quote}]'
+                    elif n == 1:
+                        return self.quote
+                    elif n == 2:
+                        return self.text
+                    return ''
+                def groups(self):
+                    return (self.quote, self.text)
+            
+            wrapped_match = MatchWrapper(title_text, quote_char)
+            result = convert_blog_title_citation(wrapped_match)
+            
+            if '](' in result:
+                conversion_count[0] += 1
+            return result
+        
+        # Apply conversion
+        processed_text = re.sub(blog_title_pattern, convert_and_count, processed_text)
+        
+        if conversion_count[0] > 0:
+            pass
+        else:
+            if matches_before > 0:
+                def smart_force_convert(match):
+                    # Handle both old pattern (group 1 = title) and new pattern (group 1 = quote, group 2 = title)
+                    if len(match.groups()) > 1 and match.group(1) in ['"', "'"]:
+                        title_text = match.group(2).strip().strip('"\'')
+                    else:
+                        title_text = match.group(1).strip().strip('"\'')
+                    title_lower = title_text.lower()
+                    normalized = re.sub(r'[^\w\s]', '', title_lower)
+                    title_words = set(normalized.split())
+                    
+                    # Extract important keywords
+                    important_keywords = {'how', 'fix', 'repair', 'dishwasher', 'refrigerator', 'leaking', 'leak', 
+                                         'not', 'working', 'broken', 'ice', 'maker', 'water', 'filter', 'door', 'seal',
+                                         'troubleshooting', 'troubleshoot', 'guide', 'diagnose', 'problem', 'issue',
+                                         'noisy', 'noise', 'making', 'whats', 'what'}
+                    title_keywords = [w for w in title_words if w in important_keywords]
+                    
+                    best_match = None
+                    best_score = 0
+                    
+                    # Try to find the best matching blog based on keywords
+                    for blog_title_lower, blog_info in blog_title_map.items():
+                        blog_normalized = re.sub(r'[^\w\s]', '', blog_title_lower)
+                        blog_words = set(blog_normalized.split())
+                        
+                        # Score based on keyword matches
+                        keyword_matches = len([kw for kw in title_keywords if kw in blog_words])
+                        # Also check for word overlap
+                        word_overlap = len(title_words.intersection(blog_words))
+                        score = keyword_matches * 2 + word_overlap  # Keywords weighted more
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_match = blog_info
+                    
+                    if best_match and best_score >= 2:  # Require at least 2 points (1 keyword or 2 word overlaps)
+                        return f"[{best_match['title']}]({best_match['url']})"
+                    elif blog_title_map:
+                        # Fallback: use first blog if no good match (but log warning)
+                        first_blog = next(iter(blog_title_map.values()))
+                        return f"[{first_blog['title']}]({first_blog['url']})"
+                    else:
+                        return match.group(0)  # Return original if no blogs available
+                
+                processed_text = re.sub(blog_title_pattern, smart_force_convert, processed_text)
+        
+        markdown_link_pattern = r'\[([^\]]+)\]\(([^\)]+)\)'
+        markdown_links_found = set()
+        
+        def deduplicate_markdown_link(match):
+            link_text = match.group(0)  # Full markdown link
+            link_url = match.group(2).lower()  # URL (normalized to lowercase)
+            if link_url in markdown_links_found:
+                return ""  # Remove duplicate
+            markdown_links_found.add(link_url)
+            return link_text
+        
+        before_dedup = processed_text
+        processed_text = re.sub(markdown_link_pattern, deduplicate_markdown_link, processed_text)
+        if before_dedup != processed_text:
+            pass
         
         # Step 2: Fix standalone part number patterns like "(PS123456, $39.84, in stock)"
         # Pattern: (PS\d+,\s*\$[\d.]+,\s*in stock|available|special order)
@@ -1297,11 +1930,10 @@ Please answer this general question to the best of your ability. If you need spe
                 # Format: (PS123456) on one line, price/stock on next
                 result = f"({part_id})\n**${price}** | **{availability}**"
                 
-                # Add links if available
+                # Add links if available (only PartSelect links, no YouTube videos)
                 if 'product' in urls:
                     result += f" [View Part]({urls['product']})"
-                if 'video' in urls:
-                    result += f" [Installation Video]({urls['video']})"
+                
                 
                 return result
             else:
@@ -1310,29 +1942,85 @@ Please answer this general question to the best of your ability. If you need spe
         
         processed_text = re.sub(standalone_part_pattern, replace_standalone_part, processed_text, flags=re.IGNORECASE)
         
-        # Step 3: Remove standalone "[Installation video]" or "[Installation Video]" text without links
-        # This happens when LLM mentions video but there's no citation
+        
+        # Pattern: [View Part] followed by optional text and part number
+        view_part_pattern = r'\[View\s+Part\]\s*(?:\((' + self.PART_NUMBER_PATTERN + r')\))?'
+        
+        def replace_view_part(match):
+            part_id = match.group(1) if match.group(1) else None
+            
+            # Try to find part_id from context if not provided
+            if part_id and part_id in part_id_to_source:
+                source_num = part_id_to_source[part_id]
+                urls = source_map.get(source_num, {})
+                if 'product' in urls:
+                    return f"[View Part]({urls['product']})"
+            
+            # If no part_id or not found, try to find any part URL nearby
+            # For now, just return the text as-is (will be handled by other patterns)
+            return match.group(0)
+        
+        processed_text = re.sub(view_part_pattern, replace_view_part, processed_text, flags=re.IGNORECASE)
+        
+        
+        
+        
+        # Pattern: URLs in parentheses like (https://...)
+        url_in_parens_pattern = r'\(https?://[^\s\)]+\)'
+        
+        def remove_duplicate_urls(match):
+            url = match.group(0)[1:-1]  # Remove parentheses
+            
+            if 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
+                return ""  # Remove YouTube URLs
+            # Check if this URL is a duplicate PartSelect URL
+            if url in all_context_urls:
+                return ""  # Remove duplicate URL
+            return match.group(0)  # Keep if not a duplicate
+        
+        processed_text = re.sub(url_in_parens_pattern, remove_duplicate_urls, processed_text)
+        
+        
+        # Pattern: https://... followed by space or end of line
+        standalone_url_pattern = r'https?://[^\s\)]+(?=\s|$)'
+        
+        def remove_standalone_urls(match):
+            url = match.group(0)
+            
+            if 'youtube.com' in url.lower() or 'youtu.be' in url.lower():
+                return ""  # Remove YouTube URLs
+            # Check if this URL is a duplicate PartSelect URL
+            if url in all_context_urls:
+                return ""  # Remove duplicate URL
+            return match.group(0)  # Keep if not a duplicate
+        
+        processed_text = re.sub(standalone_url_pattern, remove_standalone_urls, processed_text)
+        
+        
+        # Remove "[Installation video]" or "[Installation Video]" text
         standalone_video_pattern = r'\[Installation\s+[Vv]ideo\]'
+        processed_text = re.sub(standalone_video_pattern, '', processed_text)
         
-        def remove_standalone_video(match):
-            # Try to find if there's a video URL in any nearby part
-            # For now, just remove it since we can't reliably link it
-            return ""  # Remove the text
-        
-        processed_text = re.sub(standalone_video_pattern, remove_standalone_video, processed_text)
-        
-        # Also remove "Watch Video" standalone text
+        # Remove "Watch Video" standalone text
         standalone_watch_video = r'\[Watch\s+[Vv]ideo\]'
         processed_text = re.sub(standalone_watch_video, '', processed_text)
         
-        # Step 4: Remove any standalone "Sources:" section at the end
+        # Remove "video guide" text patterns
+        video_guide_pattern = r'video\s+guide[:\s]*\([^\)]*\)'
+        processed_text = re.sub(video_guide_pattern, '', processed_text, flags=re.IGNORECASE)
+        
+        # Step 7: Remove any standalone "Sources:" section at the end
         sources_section_pattern = r'\n\n\*\*Sources:\*\*.*$'
         processed_text = re.sub(sources_section_pattern, '', processed_text, flags=re.DOTALL)
         
         sources_section_pattern2 = r'\n\nSources:.*$'
         processed_text = re.sub(sources_section_pattern2, '', processed_text, flags=re.DOTALL)
         
-        # Step 5: Clean up extra newlines (max 2 consecutive)
+        # Step 8: Clean up extra newlines (max 2 consecutive)
         processed_text = re.sub(r'\n{3,}', '\n\n', processed_text)
+        
+        # Step 9: Clean up any remaining orphaned parentheses or formatting issues
+        # Remove parentheses that are now empty: "()" or "( )"
+        processed_text = re.sub(r'\(\s*\)', '', processed_text)
         
         return processed_text.strip()

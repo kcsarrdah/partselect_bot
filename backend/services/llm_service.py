@@ -24,8 +24,8 @@ class LLMService:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 500
+        temperature: float = None,
+        max_tokens: int = None
     ):
         """
         Initialize the LLM service.
@@ -39,14 +39,16 @@ class LLMService:
         """
         # Load from environment variables if not provided
         self.provider = provider or os.getenv("LLM_PROVIDER", "openrouter")
-        self.temperature = temperature or float(os.getenv("LLM_TEMPERATURE", "0.7"))
-        self.max_tokens = max_tokens or int(os.getenv("LLM_MAX_TOKENS", "500"))
+        
+        self.temperature = float(temperature if temperature is not None else os.getenv("LLM_TEMPERATURE", "0.7"))
+        
+        self.max_tokens = max_tokens if max_tokens is not None else int(os.getenv("LLM_MAX_TOKENS", "1080"))
         
         # Get provider-specific configuration
         base_url, default_model, api_key_env = self._get_client_config()
         
         # Set model and API key
-        self.model = model or os.getenv(f"{self.provider.upper()}_MODEL", default_model)
+        self.model = model or os.getenv("LLM_MODEL") or os.getenv(f"{self.provider.upper()}_MODEL", default_model)
         self.api_key = api_key or os.getenv(api_key_env)
         
         # Validate API key
@@ -54,7 +56,6 @@ class LLMService:
             raise ValueError(f"API key not found. Set {api_key_env} in .env file")
         
         # Initialize OpenAI client
-        logger.info(f"Initializing LLM Service: {self.provider} ({self.model})")
         self.client = OpenAI(
             base_url=base_url,
             api_key=self.api_key
@@ -111,10 +112,6 @@ class LLMService:
             temp = temperature if temperature is not None else self.temperature
             tokens = max_tokens if max_tokens is not None else self.max_tokens
             
-            logger.info(f"\n🤖 Generating response...")
-            logger.info(f"Model: {self.model}")
-            logger.info(f"Prompt length: {len(prompt)} chars")
-            
             # Call LLM API
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -122,7 +119,7 @@ class LLMService:
                 temperature=temp,
                 max_tokens=tokens
             )
-            
+
             # Format response
             return self._format_response(response)
         
@@ -140,8 +137,37 @@ class LLMService:
             Standardized response dictionary
         """
         try:
-            message = response.choices[0].message.content
+            if not hasattr(response, 'choices') or not response.choices:
+                logger.error(f"⚠️ No choices in response from {self.model}")
+                logger.error(f"Response object: {response}")
+                return self._handle_error(Exception("No choices in LLM response"))
+
+            if not hasattr(response.choices[0], 'message'):
+                logger.error(f"⚠️ No message in response from {self.model}")
+                logger.error(f"Response object: {response}")
+                return self._handle_error(Exception("No message in LLM response"))
+        
+            try:
+                message = response.choices[0].message.content
+            except AttributeError as e:
+                logger.error(f"⚠️ Error accessing message.content from {self.model}")
+                logger.error(f"Message object: {response.choices[0].message}")
+                logger.error(f"Message attributes: {dir(response.choices[0].message)}")
+                logger.error(f"Error: {e}")
+                return self._handle_error(Exception(f"Error accessing message content: {e}"))
+            if message is None or message.strip() == "":
+                logger.error(f"⚠️ Empty response from {self.model}")
+                logger.error(f"Response object: {response}")
+                logger.error(f"Finish reason: {response.choices[0].finish_reason}")
+                return self._handle_error(Exception("Empty response from LLM"))
+            
+            if not hasattr(response, 'usage') or response.usage is None:
+                logger.error(f"⚠️ No usage info in response from {self.model}")
+                logger.error(f"Response object: {response}")
+                return self._handle_error(Exception("No usage info in LLM response"))
+
             usage = response.usage
+
             
             log_success(logger, f"Response generated ({usage.total_tokens} tokens)")
             
@@ -162,6 +188,9 @@ class LLMService:
                 }
             }
         except Exception as e:
+            logger.error(f"Error formatting response: {e}")
+            logger.error(f"Response type: {type(response)}")
+            logger.error(f"Response: {response}")
             return self._handle_error(e)
     
     def _handle_error(self, error: Exception) -> Dict[str, Any]:
@@ -219,7 +248,6 @@ class LLMService:
         Returns:
             Response from test prompt
         """
-        logger.info("\n🔍 Testing LLM connection...")
         result = self.generate(
             prompt="Reply with exactly: 'Connection successful!'",
             max_tokens=50
@@ -233,7 +261,6 @@ class LLMService:
         return result
 
 
-# Test code
 if __name__ == "__main__":
     print("\n=== Testing LLM Service ===\n")
     

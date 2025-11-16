@@ -6,6 +6,7 @@ Simplified based on research: few-shot examples > explicit rules (Wei et al. 202
 
 from typing import List, Dict, Any, Optional
 from .system_prompts import PARTSELECT_SYSTEM_PROMPT, FEW_SHOT_EXAMPLES
+import re
 
 
 def format_part_info(part_doc: Dict[str, Any]) -> str:
@@ -181,6 +182,10 @@ def _get_query_guidance(analysis: Dict[str, Any]) -> str:
             guidance_parts.append("1. What's the likely cause?")
             guidance_parts.append("2. Which parts fix this specific problem?")
             guidance_parts.append("3. What are the installation steps?")
+        
+        
+        guidance_parts.append("4. **IMPORTANT: If blog articles are in the context, mention them with their links**")
+        guidance_parts.append("   Blog articles provide helpful troubleshooting guides - include them when relevant!")
     
     # Part number lookup - simple reminder
     elif analysis.get('part_numbers'):
@@ -205,10 +210,14 @@ def build_rag_prompt(
     system_prompt: str = PARTSELECT_SYSTEM_PROMPT,
     include_examples: bool = True,
     query_analysis: Optional[Dict[str, Any]] = None,
-    max_context_tokens: int = 4000
+    max_context_tokens: int = 4000,
+    conversation_history: Optional[List[Dict[str, str]]] = None
 ) -> str:
     """
     Build complete prompt for RAG query following research best practices.
+    
+    Args:
+        conversation_history: List of recent Q&A pairs for context awareness
     """
     prompt_parts = []
     
@@ -216,30 +225,56 @@ def build_rag_prompt(
     prompt_parts.append(system_prompt.strip())
     prompt_parts.append("\n")
     
+    
+    # Include conversation history regardless of query topic - this helps with follow-up questions
+    if conversation_history and len(conversation_history) > 0:
+        prompt_parts.append("\n=== RECENT CONVERSATION HISTORY (for context) ===\n")
+        for i, exchange in enumerate(conversation_history[-10:]):  # Last 10 for context
+            prompt_parts.append(f"User: {exchange['query']}\n")
+            prompt_parts.append(f"Assistant: {exchange['answer']}\n\n")
+        prompt_parts.append("=== END HISTORY ===\n")
+        prompt_parts.append("NOTE: Use this conversation history to understand what we've discussed. The current user question takes priority.\n")
+    
     # 2. Few-shot examples (CRITICAL per Wei et al. 2022)
     if include_examples:
         prompt_parts.append(FEW_SHOT_EXAMPLES.strip())
         prompt_parts.append("\n")
     
-    # ✅ NEW: Check if query is about out-of-scope appliances
+    
+    # IMPORTANT: Check "washing machine" before "washer" to avoid false positives with "dishwasher"
     out_of_scope_appliances = [
-        'washing machine', 'washer', 'dryer', 'oven', 'stove', 'range', 
+        'washing machine',  # Check this first (more specific)
+        'dryer', 'oven', 'stove', 'range', 
         'cooktop', 'microwave', 'air conditioner', 'ac unit', 'heater',
         'furnace', 'water heater', 'garbage disposal', 'trash compactor'
     ]
     
     query_lower = user_query.lower()
-    detected_out_of_scope = [app for app in out_of_scope_appliances if app in query_lower]
     
-    if detected_out_of_scope:
-        appliance_list = ', '.join(detected_out_of_scope)
-        prompt_parts.append(f"🚨 CRITICAL SCOPE VIOLATION: The user is asking about {appliance_list}.")
-        prompt_parts.append("This is OUTSIDE your scope. You MUST:")
-        prompt_parts.append("1. Politely decline immediately")
-        prompt_parts.append("2. DO NOT use ANY information from the context below")
-        prompt_parts.append("3. DO NOT mention any parts, prices, or installation videos")
-        prompt_parts.append("4. ONLY say: 'I specialize in refrigerator and dishwasher parts only. For [appliance] parts, please visit PartSelect.com or contact their support team.'")
-        prompt_parts.append("\n⚠️ IGNORE ALL CONTEXT BELOW - IT IS IRRELEVANT FOR OUT-OF-SCOPE QUERIES.\n")
+    
+    is_in_scope = 'refrigerator' in query_lower or 'dishwasher' in query_lower or 'fridge' in query_lower
+    
+    
+    detected_out_of_scope = []
+    
+    # Only check for out-of-scope if NOT already confirmed as in-scope
+    if not is_in_scope:
+        # Check for "washing machine" (specific phrase)
+        if 'washing machine' in query_lower:
+            detected_out_of_scope.append('washing machine')
+        
+        # Check for standalone "washer" (not part of "dishwasher")
+        # Use word boundaries: "washer" should be a separate word, not part of "dishwasher"
+        if re.search(r'\bwasher\b', query_lower) and 'dishwasher' not in query_lower:
+            detected_out_of_scope.append('washer')
+        
+        # Check other out-of-scope appliances
+        for app in out_of_scope_appliances:
+            if app not in ['washing machine', 'washer']:  # Already checked above
+                if app in query_lower:
+                    detected_out_of_scope.append(app)
+    
+    # REMOVED complex warnings - let the system prompt handle scope enforcement
     
     # 3. Check for conflicts in retrieved documents
     conflict_warning = detect_conflicts(context_docs)
@@ -262,13 +297,31 @@ def build_rag_prompt(
             prompt_parts.append(guidance)
             prompt_parts.append("\n")
     
+    
+    if query_analysis and query_analysis.get('part_numbers'):
+        requested_part_numbers = query_analysis['part_numbers']
+        if len(requested_part_numbers) == 1:
+            # Single part number query - STRICT instruction
+            prompt_parts.append(f"🚨 CRITICAL: The user asked about SPECIFIC PART NUMBER {requested_part_numbers[0]}.")
+            prompt_parts.append(f"You MUST ONLY mention part {requested_part_numbers[0]} in your response.")
+            prompt_parts.append("DO NOT mention any other part numbers, even if they appear in the context.")
+            prompt_parts.append("DO NOT suggest other parts or upsell.")
+            prompt_parts.append("\n")
+        else:
+            # Multiple part numbers - mention only these
+            parts_list = ', '.join(requested_part_numbers)
+            prompt_parts.append(f"🚨 CRITICAL: The user asked about SPECIFIC PART NUMBERS: {parts_list}.")
+            prompt_parts.append(f"You MUST ONLY mention these parts in your response.")
+            prompt_parts.append("DO NOT mention any other part numbers, even if they appear in the context.")
+            prompt_parts.append("\n")
+    
     # 6. User query
     prompt_parts.append(f"USER QUESTION: {user_query}")
     prompt_parts.append("\n")
     
     # 7. Final instruction with source attribution requirement
     if detected_out_of_scope:
-        # ✅ CRITICAL: When out-of-scope, completely ignore context
+        
         prompt_parts.append(
             "🚨 CRITICAL INSTRUCTION: The user is asking about an appliance OUTSIDE your scope."
         )
@@ -283,13 +336,44 @@ def build_rag_prompt(
             "DO NOT mention any parts, prices, or information from the context."
         )
     else:
+        
+        query_lower = user_query.lower()
+        brands_in_query = []
+        common_brands = ['samsung', 'whirlpool', 'ge', 'frigidaire', 'lg', 'bosch', 'kitchenaid', 'maytag', 'kenmore']
+        for brand in common_brands:
+            if brand in query_lower:
+                brands_in_query.append(brand)
+        
+        if not brands_in_query:
+            # User didn't mention a brand - warn LLM not to assume
+            prompt_parts.append(
+                "⚠️ IMPORTANT: The user did NOT mention a specific brand. "
+                "Use generic language (e.g., 'ice maker' not 'Samsung ice maker'). "
+                "Do NOT assume brand names from context - only use brands the user explicitly stated."
+            )
+            prompt_parts.append("")
+        
+        
+        has_blogs = any(
+            doc.get('metadata', {}).get('type') == 'blog' 
+            for doc in context_docs
+        )
+        
+        if has_blogs:
+            prompt_parts.append(
+                "📚 **IMPORTANT: Blog articles are included in the context above.** "
+                "When relevant to the user's question, mention these blog articles with their links. "
+                "They provide helpful troubleshooting guides and detailed information."
+            )
+            prompt_parts.append("")
+        
         prompt_parts.append(
             "Answer based on the context above. "
             "Follow the examples shown. "
             "Cite sources using [Source N] when making factual claims."
         )
     
-    # ✅ REMOVED: The duplicate reminder at the end - it's already in the instruction above
+    
     
     # Check token budget
     full_prompt = "\n".join(prompt_parts)

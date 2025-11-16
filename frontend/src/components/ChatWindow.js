@@ -117,11 +117,19 @@ function ChatWindow({ messages, setMessages }) {
         });
       } catch (error) {
         // Remove loading and show error
+        // Note: getAIMessage already handles errors gracefully, but this is a fallback
         setMessages(prevMessages => {
           const withoutLoading = prevMessages.filter(msg => !msg.isLoading);
           return [...withoutLoading, {
             role: "assistant",
-            content: "Sorry, something went wrong. Please try again."
+            content: `�� **Unexpected Error**
+
+Something unexpected happened. Please try:
+• Refreshing the page
+• Checking your internet connection
+• Trying again in a moment
+
+If the problem persists, please contact support.`
           }];
         });
       } finally {

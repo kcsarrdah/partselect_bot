@@ -169,6 +169,15 @@ class RAGService:
             
             log_success(logger, f"Retrieved {len(context_docs)} documents")
             
+            # CRITICAL FIX: If appliance not detected from query, extract it from retrieved part metadata
+            if not analysis.get('appliance') and analysis.get('part_numbers'):
+                for doc in context_docs:
+                    doc_metadata = doc.get('metadata', {})
+                    if doc_metadata.get('type') == 'part' and doc_metadata.get('appliance'):
+                        analysis['appliance'] = doc_metadata.get('appliance')
+                        logger.info(f"Detected appliance '{analysis['appliance']}' from part metadata")
+                        break
+            
             if analysis.get('part_numbers') and not analysis.get('is_repair_query') and not analysis.get('is_installation_query'):
                 requested_parts = set(analysis['part_numbers'])
                 filtered_docs = []
@@ -1355,6 +1364,11 @@ Please answer this general question to the best of your ability. If you need spe
                     urls['product'] = metadata['product_url']
                     all_context_urls.add(metadata['product_url'])
                 
+                # Include installation video URL
+                if metadata.get('install_video_url') and metadata.get('install_video_url') != 'N/A':
+                    urls['install_video'] = metadata['install_video_url']
+                    all_context_urls.add(metadata['install_video_url'])
+                
                 part_name = metadata.get('part_name', 'Part')
                 part_id = metadata.get('part_id', '')
                 price = metadata.get('price', '')
@@ -1417,6 +1431,9 @@ Please answer this general question to the best of your ability. If you need spe
                 if 'product' in urls:
                     result += f" [View Part]({urls['product']})"
                 
+                # Add installation video link if available
+                if 'install_video' in urls:
+                    result += f" [Installation Video]({urls['install_video']})"
                 
                 return result
             
@@ -1436,6 +1453,48 @@ Please answer this general question to the best of your ability. If you need spe
         
         processed_text = re.sub(citation_pattern, replace_citation, response_text)
         
+        # Step 2: Convert [Installation video] / [Video guide] citations to links
+        # Find parts with installation videos in context
+        part_video_map = {}
+        for idx, doc in enumerate(context_docs, start=1):
+            metadata = doc.get('metadata', {})
+            if metadata.get('type') == 'part':
+                part_id = metadata.get('part_id', '')
+                install_video_url = metadata.get('install_video_url', '')
+                if part_id and install_video_url and install_video_url != 'N/A':
+                    part_video_map[part_id] = install_video_url
+        
+        # Convert [Installation video] patterns to links
+        installation_video_patterns = [
+            r'\[Installation\s+[Vv]ideo\]',
+            r'\[Video\s+guide\]',
+            r'\[Video\s+Guide\]',
+            r'\[Installation\s+video\s+guide\]'
+        ]
+        
+        def replace_installation_video(match):
+            # Try to find the part ID from nearby text
+            context_start = max(0, match.start() - 100)
+            context_end = min(len(processed_text), match.end() + 100)
+            context = processed_text[context_start:context_end]
+            
+            # Extract part number from context
+            part_match = re.search(r'\bPS\d+\b', context)
+            if part_match:
+                part_id = part_match.group(0)
+                if part_id in part_video_map:
+                    return f"[Installation Video]({part_video_map[part_id]})"
+            
+            # Fallback: Use first available video from any part in context
+            if part_video_map:
+                first_video_url = next(iter(part_video_map.values()))
+                return f"[Installation Video]({first_video_url})"
+            
+            # If no video found, remove the citation
+            return ''
+        
+        for pattern in installation_video_patterns:
+            processed_text = re.sub(pattern, replace_installation_video, processed_text, flags=re.IGNORECASE)
         
         # Pattern: [Article Title] that matches blog titles from context
         # Build a map of blog titles to URLs (with fuzzy matching support)
@@ -1997,9 +2056,8 @@ Please answer this general question to the best of your ability. If you need spe
         processed_text = re.sub(standalone_url_pattern, remove_standalone_urls, processed_text)
         
         
-        # Remove "[Installation video]" or "[Installation Video]" text
-        standalone_video_pattern = r'\[Installation\s+[Vv]ideo\]'
-        processed_text = re.sub(standalone_video_pattern, '', processed_text)
+        # Note: [Installation video] citations are now converted to links in _embed_source_links
+        # No need to remove them here
         
         # Remove "Watch Video" standalone text
         standalone_watch_video = r'\[Watch\s+[Vv]ideo\]'

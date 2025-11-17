@@ -5,6 +5,7 @@ An AI-powered chat assistant for PartSelect e-commerce, helping customers find r
 ### Project Slides: https://docs.google.com/presentation/d/1dia1NqIOm6_RcjD5iTjpCirABp6BXqcF1joGok03rzg/edit?usp=sharing
 
 ### Explanation, Walkthrough & Demo Video : 
+https://www.loom.com/share/ebab2ad05c284787b3b49ea5c6f26cbf
 
 ## Setup
 

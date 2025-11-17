@@ -2,6 +2,10 @@
 
 An AI-powered chat assistant for PartSelect e-commerce, helping customers find refrigerator and dishwasher parts, troubleshoot issues, and get installation guidance using RAG architecture with Deepseek LLM.
 
+### Project Slides: https://docs.google.com/presentation/d/1dia1NqIOm6_RcjD5iTjpCirABp6BXqcF1joGok03rzg/edit?usp=sharing
+
+### Explanation, Walkthrough & Demo Video : 
+
 ## Setup
 
 ### Frontend
@@ -20,7 +24,7 @@ cd backend
 # Create a .env file and add the following
 OPENROUTER_API_KEY=your_key_here
 LLM_PROVIDER=openrouter
-LLM_MODEL=google/gemma-3-27b-it:free
+LLM_MODEL=deepseek/deepseek-chat-v3.1
 
 # Install dependencies
 python3 -m venv venv
@@ -28,13 +32,25 @@ source venv/bin/activate  # On macOS/Linux
 pip install -r requirements.txt
 
 # Build Vector Store (Production Data)
-python3 -m services.ingestion_pipeline
+python3 main.py
 
-# Start backend server
-uvicorn main:app --reload
+# expect a slower start since this step imvolves initialization of the pipeline(loading, chunking, embedding ... )
+
 ```
 
 Backend runs at `http://localhost:8000`
+
+### Scrapers
+```bash
+cd backend/scrappers
+# Install scraper dependencies (already in requirements.txt)
+pip install selenium webdriver-manager undetected-chromedriver
+
+# Run scrapers
+python3 selenium_scraper_blogs.py      # Scrapes blog articles
+python3 selenium_scrapper_parts.py     # Scrapes parts data
+python3 selenium_scrapper_repairs.py   # Scrapes repair guides
+```
 
 ## Testing
 
